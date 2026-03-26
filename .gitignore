@@ -1,0 +1,24 @@
+# Data folders
+data/
+dataset_yolo/
+
+# Models
+models/
+*.pt
+*.pth
+
+# Virtual environments
+.venv/
+venv/
+
+# Cache
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs/temp
+*.log
+*.tmp
