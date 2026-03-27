@@ -281,11 +281,12 @@ def annotate_and_collect_objects(
     frame: np.ndarray,
     yolo_model: YOLO,
     yolo_device: str,
-    conf_threshold: float = 0.25,
-) -> Tuple[np.ndarray, Set[str]]:
-    """Run YOLO inference, return annotated frame and detected class-name set."""
+    conf_threshold: float = 0.3,
+) -> Tuple[np.ndarray, Set[str], List[Tuple[str, float]]]:
+    """Run YOLO inference and return frame, object names, and (label, confidence) list."""
     annotated = frame.copy()
     detected_objects: Set[str] = set()
+    detected_with_confidence: List[Tuple[str, float]] = []
     results = yolo_model.predict(
         source=annotated,
         verbose=False,
@@ -301,9 +302,12 @@ def annotate_and_collect_objects(
         if boxes is not None:
             for box in boxes:
                 cls_id = int(box.cls[0].item())
-                detected_objects.add(result.names.get(cls_id, str(cls_id)))
+                conf = float(box.conf[0].item())
+                label = result.names.get(cls_id, str(cls_id))
+                detected_objects.add(label)
+                detected_with_confidence.append((label, conf))
 
-    return annotated, detected_objects
+    return annotated, detected_objects, detected_with_confidence
 
 
 def run_video(

@@ -12,6 +12,8 @@ HUMAN_DATA_DIR = DATA_DIR / "human_cleaned"
 WAVEFORM_DATA_DIR = DATA_DIR / "waveforms_cleaned"
 YOLO_DATASET_DIR = BASE_DIR / "dataset_yolo"
 YOLO_DATA_YAML = YOLO_DATASET_DIR / "data.yaml"
+AUTO_LABEL_DATASET_DIR = BASE_DIR / "dataset_auto_labels"
+AUTO_LABEL_DATA_YAML = AUTO_LABEL_DATASET_DIR / "data.yaml"
 
 # Model artifact save paths.
 MODELS_DIR = BASE_DIR / "models"

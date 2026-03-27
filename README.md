@@ -1,129 +1,158 @@
-# 🌊 Underwater Multimodal AI Detection System
+﻿# 🌊 Underwater Multimodal AI Detection System
 
-A real-time multimodal AI project for underwater scene understanding that combines:
-
-- Computer vision using Ultralytics YOLOv8 for marine object detection
-- Audio classification using a PyTorch CNN on mel spectrograms
-- Live visualization and analytics through a Streamlit dashboard
-
-The system supports video file inference and webcam mode, with synchronized object and audio insights over time.
+A real-time AI system that detects underwater objects and analyzes audio using computer vision and deep learning, with an intelligent threat alert system.
 
 ---
 
-## ✨ Features
+## 🚀 Features
 
-- 🐠 Object detection using YOLOv8
-- 🔊 Audio classification across multiple underwater acoustic classes (about 49 classes)
-- ⏱ Dynamic audio prediction over timeline chunks
-- 🖥 Streamlit dashboard UI for interactive monitoring
-- 🎥 Real-time video processing with annotated frames
-- 🎯 Confidence filtering for detection stability
-- 📥 Downloadable processed video output
-
----
-
-## 🧠 Models Used
-
-### A) YOLO Model (Object Detection)
-
-- Framework: Ultralytics YOLOv8
-- Target classes:
-  - crab
-  - dolphin
-  - octopus
-  - seahorse
-  - seal
-  - seaturtle
-  - shark
-  - starfish
-- Typical training configuration:
-  - epochs: about 50
-  - image size: 640
-  - batch size: configurable (commonly 8)
-- Reported performance (project benchmark): mAP about 0.91
-
-### B) Audio Model (Classification)
-
-- Framework: PyTorch CNN
-- Input representation:
-  - mel spectrogram
-  - sample rate: 22050
-  - n_mels: 128
-  - audio duration window: 3 seconds
-- Architecture:
-  - Conv2D blocks with ReLU + MaxPool
-  - Fully connected head with Dropout
-- Number of classes: about 49
-- Typical validation accuracy: about 85 to 90 percent
+- Real-time object detection using YOLOv8
+- Audio classification using CNN (mel spectrograms)
+- Multimodal detection (video + audio)
+- Confidence-weighted threat detection
+- Temporal stability filtering (anti-flicker alerts)
+- Dynamic threat levels (1-10)
+- Sound alert system (toggle-based)
+- Threat history logging
+- Analytics dashboard (charts)
+- Ocean-themed UI with glassmorphism design
 
 ---
 
-## 🗂 Dataset Structure
+## 🧠 System Architecture
+
+Video Input -> YOLO Detection -> Object Labels  
+Audio Input -> CNN Model -> Audio Labels  
+Downstream fusion:  
+Temporal Aggregation -> Confidence Scoring -> Stability Filter  
+Then:  
+Threat Detection -> UI Alerts + Logging
+
+---
+
+## 📂 Dataset
 
 ```text
 data/
-├── aquatic_animals_cleaned/      # 8 marine image classes for detection
-├── human_cleaned/                # present in project, ignored for detection pipeline
-├── waveforms_cleaned/            # underwater/audio class folders
-└── test_videos/                  # sample videos for inference testing
+├── aquatic_animals_cleaned/   # 10 image classes
+├── waveforms_cleaned/         # underwater audio dataset
+└── test_videos/               # inference/demo videos
 ```
 
+Detection classes:
+
+- crab
+- dolphin
+- human
+- octopus
+- seahorse
+- seal
+- seaturtle
+- shark
+- starfish
+- submarine
+
+Notes:
+
+- Images are auto-annotated using YOLO (pseudo-labeling).
+- Bounding boxes are generated automatically.
+
 ---
 
-## 📦 Dataset & Models
+## 🔄 Auto-Annotation Pipeline
 
-Due to GitHub size limitations, datasets and trained models are not included in this repository.
+- Uses pretrained YOLO to generate bounding boxes
+- Confidence threshold tuned (about 0.3) for better coverage
+- Iterative self-training supported
 
-They can be downloaded from the following link:
+Note:
 
-🔗 demo.googledrive
-
-(Note: This is a placeholder link and will be updated with the actual dataset.)
+This replaces manual labeling and improves localization over time.
 
 ---
 
-## 🏗 Project Structure
+## 🤖 Models
+
+### YOLOv8
+
+- Used for object detection
+- Pretrained model: `yolov8n`
+- Fine-tuned on custom underwater dataset
+
+### CNN (Audio Model)
+
+- Input: Mel spectrogram
+- Output: Audio class prediction
+- Typical validation accuracy: about 85% to 95%
+
+---
+
+## 🚨 Threat Detection System
+
+- Uses object detection results
+- Applies confidence-weighted scoring
+- Uses a 5-second rolling window
+- Uses stability threshold (user-controlled)
+- Assigns threat levels (1-10)
+
+Examples:
+
+- Shark -> High threat
+- Submarine -> High threat
+- Seahorse -> Low threat
+
+---
+
+## 🎨 UI Dashboard
+
+- Ocean-themed design
+- Glassmorphism cards
+- Real-time video feed
+- Alerts with color coding
+- Analytics charts
+- Threat history log
+
+---
+
+## 🗂 Project Structure
 
 ```text
 src/
-├── app/          # Streamlit dashboard
-├── config/       # central paths and settings
-├── data/         # dataset loaders and conversion scripts
-├── inference/    # video/audio/pipeline inference
-├── models/       # model definitions (image, audio, yolo wrappers)
-└── training/     # training scripts for image, audio, and yolo
+├── app/         # streamlit dashboard
+├── config/      # paths and settings
+├── data/        # conversion and annotation scripts
+├── inference/   # multimodal inference pipeline
+├── models/      # model definitions
+└── training/    # training scripts
+
+models/
+├── detection/
+├── audio/
+└── image/
+
+dataset_auto_labels/
+├── images/
+├── labels/
+└── data.yaml
 ```
-
-Additional directories:
-
-- models/: saved model weights and class mappings
-- dataset_yolo/: generated YOLO training dataset
 
 ---
 
 ## ⚙️ Installation
 
-### 1) Create virtual environment
+1. Create virtual environment:
 
 ```powershell
 python -m venv .venv
 ```
 
-### 2) Activate environment
-
-PowerShell:
+2. Activate environment (PowerShell):
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 ```
 
-Command Prompt:
-
-```bat
-.venv\Scripts\activate.bat
-```
-
-### 3) Install dependencies
+3. Install dependencies:
 
 ```powershell
 pip install -r requirements.txt
@@ -131,52 +160,21 @@ pip install -r requirements.txt
 
 ---
 
-## ⚙️ Setup Instructions
+## 🏋️ Training
 
-### 1. Clone Repository
-
-```bash
-git clone <repo_url>
-cd <repo_name>
-```
-
-### 2. Create Virtual Environment
-
-```bash
-python -m venv .venv
-```
-
-### 3. Activate Environment
-
-Windows:
+1. Regenerate auto labels:
 
 ```powershell
-.\.venv\Scripts\Activate
+python src/data/auto_annotate.py
 ```
 
-### 4. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## 🏋️ Training Instructions
-
-### 1) Convert aquatic image dataset to YOLO format
-
-```powershell
-python src/data/convert_to_yolo.py
-```
-
-### 2) Train YOLO model
+2. Train YOLO model:
 
 ```powershell
 python src/training/train_yolo.py
 ```
 
-### 3) Train audio model
+3. Train audio model:
 
 ```powershell
 python src/training/train_audio.py
@@ -184,97 +182,38 @@ python src/training/train_audio.py
 
 ---
 
-## 🔍 Inference
+## ▶️ How to Run
 
-### Video object detection
-
-```powershell
-python src/inference/predict_video.py --video data/test_videos/fish_video.mp4
-```
-
-### Multimodal pipeline (video + audio)
-
-```powershell
-python src/inference/pipeline.py --video data/test_videos/fish_video.mp4
-```
-
----
-
-## 🖥 Run Application
+1. Activate environment.
+2. Run Streamlit app:
 
 ```powershell
 streamlit run src/app/streamlit_app.py
 ```
 
-The dashboard provides:
+---
 
-- Dynamic audio labels synchronized to video timeline
-- Real-time object detections and insights
-- Confidence threshold control
-- Live webcam mode toggle
-- Processed video playback and download
+## ⚠️ Dataset Note
+
+Dataset is not included due to size.
+
+A downloadable link will be provided:
+
+[Dataset Link - Coming Soon]
 
 ---
 
-## 🚀 Run Project
+## 📸 Demo
 
-### Run Streamlit App
+![Demo](assets/demo.png)
 
-```bash
-streamlit run src/app/streamlit_app.py
-```
-
-### Run Video Pipeline
-
-```bash
-python src/inference/pipeline.py --video data/test_videos/sample.mp4
-```
+(Optional: add video later)
 
 ---
 
-## 🔄 How It Works
+## 🔮 Future Improvements
 
-1. Input video stream is read frame by frame.
-2. YOLOv8 performs object detection on each frame.
-3. Audio is extracted from video and split into time chunks.
-4. Each chunk is converted to mel spectrogram and classified by the CNN.
-5. Audio predictions are aligned to current video timestamp.
-6. Streamlit displays synchronized audio + object insights in real time.
-
----
-
-## 🚀 Key Highlights
-
-- Multimodal AI design (vision + audio)
-- Real-time synchronized inference
-- Professional interactive dashboard
-- Clean modular architecture for extensibility
-
----
-
-## ⚠️ Limitations
-
-- Bounding boxes are generated from available labels and may be approximate
-- CPU-only execution can reduce FPS and responsiveness
-- Dataset diversity and annotation quality directly impact generalization
-
----
-
-## 🛠 Future Improvements
-
-- Improve annotation quality and box precision
-- Optimize GPU acceleration and model quantization
-- Expand class coverage for both image and audio domains
-- Deploy to cloud or edge runtime for production use
-
----
-
-## 👤 Author
-
-Developed as an underwater multimodal AI research and engineering project.
-
-If you are extending this repository, consider adding:
-
-- your name
-- institution or team
-- contact or portfolio link
+- Manual annotation for higher accuracy
+- Deployment to cloud
+- Real-time underwater drone integration
+- Advanced analytics

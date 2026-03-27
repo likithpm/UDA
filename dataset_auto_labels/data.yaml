@@ -1,0 +1,17 @@
+path: dataset_auto_labels
+train: images
+val: images
+
+nc: 10
+
+names:
+  - crab
+  - dolphin
+  - human
+  - octopus
+  - seahorse
+  - seal
+  - seaturtle
+  - shark
+  - starfish
+  - submarine

@@ -13,9 +13,9 @@ from ultralytics import YOLO
 
 try:
     from src.config.config import (
+        AUTO_LABEL_DATA_YAML,
         BASE_DIR,
         DETECTION_MODELS_DIR,
-        YOLO_DATA_YAML,
         YOLO_WEIGHTS_PATH,
     )
 except ModuleNotFoundError:
@@ -24,9 +24,9 @@ except ModuleNotFoundError:
     if str(project_root) not in sys.path:
         sys.path.append(str(project_root))
     from src.config.config import (
+        AUTO_LABEL_DATA_YAML,
         BASE_DIR,
         DETECTION_MODELS_DIR,
-        YOLO_DATA_YAML,
         YOLO_WEIGHTS_PATH,
     )
 
@@ -65,7 +65,7 @@ def _resolve_dataset_root(data_yaml: Dict[str, Any], data_yaml_path: Path) -> Pa
     if candidate.is_absolute():
         return candidate
 
-    # Our project stores path as project-relative, e.g. "dataset_yolo".
+    # Project config stores path as project-relative.
     return BASE_DIR / candidate
 
 
@@ -79,16 +79,28 @@ def _resolve_split_dir(dataset_root: Path, split_value: Any) -> Path:
     return dataset_root / split_path
 
 
+def _clear_yolo_cache_files(dataset_root: Path) -> int:
+    """Delete stale YOLO .cache files to avoid inconsistent cached metadata."""
+    deleted_count = 0
+    for cache_file in dataset_root.rglob("*.cache"):
+        try:
+            cache_file.unlink()
+            deleted_count += 1
+        except OSError as err:
+            print(f"Warning: failed to delete cache file {cache_file}: {err}")
+    return deleted_count
+
+
 def validate_yolo_dataset() -> None:
     """Run dry-run checks for YOLO dataset config before training."""
-    if not YOLO_DATA_YAML.exists():
+    if not AUTO_LABEL_DATA_YAML.exists():
         raise FileNotFoundError(
-            f"YOLO data config not found: {YOLO_DATA_YAML}. "
-            "Run the dataset conversion script first."
+            f"YOLO data config not found: {AUTO_LABEL_DATA_YAML}. "
+            "Run auto annotation first to generate dataset_auto_labels/data.yaml."
         )
 
-    data_yaml = _load_data_yaml(YOLO_DATA_YAML)
-    dataset_root = _resolve_dataset_root(data_yaml, YOLO_DATA_YAML)
+    data_yaml = _load_data_yaml(AUTO_LABEL_DATA_YAML)
+    dataset_root = _resolve_dataset_root(data_yaml, AUTO_LABEL_DATA_YAML)
     train_images_dir = _resolve_split_dir(dataset_root, data_yaml.get("train"))
     val_images_dir = _resolve_split_dir(dataset_root, data_yaml.get("val"))
 
@@ -109,7 +121,7 @@ def validate_yolo_dataset() -> None:
         raise ValueError("No classes found in data.yaml. Ensure 'names' contains at least one class.")
 
     print("Dataset summary:")
-    print(f"- data.yaml: {YOLO_DATA_YAML}")
+    print(f"- data.yaml: {AUTO_LABEL_DATA_YAML}")
     print(f"- dataset root: {dataset_root}")
     print(f"- train images: {train_images_dir}")
     print(f"- val images: {val_images_dir}")
@@ -121,18 +133,37 @@ def run_yolo_training() -> None:
     """Train YOLOv8n with configured dataset and save best model checkpoint."""
     validate_yolo_dataset()
 
+    data_yaml = _load_data_yaml(AUTO_LABEL_DATA_YAML)
+    dataset_root = _resolve_dataset_root(data_yaml, AUTO_LABEL_DATA_YAML)
+
+    # Clear YOLO cache files before training to prevent stale cached shapes/labels.
+    deleted_cache_files = _clear_yolo_cache_files(dataset_root)
+    if deleted_cache_files:
+        print(f"Cleared {deleted_cache_files} YOLO cache file(s) from: {dataset_root}")
+
     device = _resolve_device()
     print(f"Using device: {device}")
 
     # Requirement: start from lightweight pretrained YOLOv8n weights.
     model = YOLO("yolov8n.pt")
 
+    """
+    NOTE:
+    This training uses auto-generated bounding box labels created via pretrained YOLO.
+
+    This significantly improves localization compared to full-image labels.
+    However, label quality depends on the initial auto-detection accuracy.
+
+    Further improvement can be achieved via iterative re-labeling.
+    """
+
     results = model.train(
-        data=str(YOLO_DATA_YAML),
+        data=str(AUTO_LABEL_DATA_YAML),
         epochs=50,
         imgsz=640,
         batch=8,
         augment=True,
+        multi_scale=False,
         device=device,
         project=str(DETECTION_MODELS_DIR),
         name="yolo_train",
