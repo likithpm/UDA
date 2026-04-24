@@ -203,18 +203,21 @@ def _render_system_status_panel(startup_status: dict | None = None) -> None:
         "Startup",
         "✔ Model Loaded" if model_ok else "✖ Model Not Loaded",
         tone="low" if model_ok else "neutral",
+        icon="🧩",
     )
     _render_signal_card(
         col2.empty(),
         "Dataset",
         "✔ Dataset Loaded" if dataset_ok else "✖ Dataset Not Loaded",
         tone="low" if dataset_ok else "neutral",
+        icon="🗂",
     )
     _render_signal_card(
         col3.empty(),
         "Classes / SaiG",
         f"✔ Classes: {classes_count} | 🧠 {saig_mode}",
         tone="neutral",
+        icon="🧠",
     )
 
 
@@ -222,9 +225,11 @@ def _render_performance_metrics(placeholder, fps: float, inference_ms: float) ->
     """Render live frame performance metrics."""
     _render_signal_card(
         placeholder,
-        "Performance",
-        f"⚡ FPS: {fps:.2f} | ⏱️ Inference: {inference_ms:.1f} ms",
+        "FPS",
+        f"{fps:.1f}",
         tone="neutral",
+        icon="⚡",
+        meta=f"Inference {inference_ms:.1f} ms",
     )
 
 
@@ -271,6 +276,19 @@ def _simulated_saig_response(
     unique_objects = sorted(set(detected_objects))
     level = _estimate_threat_level(unique_objects)
     recent_turns = max(len(chat_history) - 1, 0)
+    previous_user_message = ""
+    for message in reversed(chat_history):
+        if str(message.get("role", "")).strip() == "user":
+            previous_user_message = str(message.get("content", "")).strip()
+            break
+
+    object_reasoning_map = {
+        "shark": "Detected a shark in the current frame. This species may represent elevated risk depending on distance and movement.",
+        "submarine": "A submarine-like object is visible. This may indicate human-made underwater activity and should be monitored.",
+        "human": "A human diver appears in the scene. Safety context matters, especially when large predators are nearby.",
+        "whale": "A whale-like presence suggests large marine life nearby; typically low immediate threat but worth tracking.",
+        "seal": "A seal is visible, which is generally moderate risk unless high-threat objects are also present.",
+    }
 
     if unique_objects:
         object_text = ", ".join(unique_objects)
@@ -278,20 +296,26 @@ def _simulated_saig_response(
             f"From the latest frame, I can see {object_text}. "
             f"For your question \"{user_prompt}\", this scene suggests a threat level around {level}/10."
         )
-        if level >= 7:
-            reasoning = (
-                "The reason is that at least one high-risk marine object is present, "
-                "so the environment should be treated as potentially dangerous."
-            )
-        elif level >= 4:
-            reasoning = (
-                "The detections indicate moderate risk, which means caution is recommended "
-                "while continuing to monitor upcoming frames."
-            )
-        else:
-            reasoning = (
-                "Only low-risk classes are visible right now, so the immediate threat appears limited."
-            )
+        key_reasoning = []
+        for obj in unique_objects:
+            if obj in object_reasoning_map:
+                key_reasoning.append(object_reasoning_map[obj])
+
+        if not key_reasoning:
+            if level >= 7:
+                key_reasoning.append(
+                    "At least one high-risk detection is present, so this frame should be treated as potentially dangerous."
+                )
+            elif level >= 4:
+                key_reasoning.append(
+                    "The detections indicate moderate risk, so continued monitoring is recommended."
+                )
+            else:
+                key_reasoning.append(
+                    "Only lower-risk objects are visible right now, so the immediate threat appears limited."
+                )
+
+        reasoning = " ".join(key_reasoning)
     else:
         scene_description = (
             f"I do not see confident object detections in the latest frame, but for your question "
@@ -307,7 +331,12 @@ def _simulated_saig_response(
         if recent_turns > 0
         else ""
     )
-    return f"{scene_description} {reasoning}{memory_context}"
+    follow_up_context = (
+        f" Your previous question was \"{previous_user_message}\", so this answer keeps that context in mind."
+        if previous_user_message and previous_user_message != user_prompt
+        else ""
+    )
+    return f"{scene_description} {reasoning}{memory_context}{follow_up_context}"
 
 
 def query_saig(
@@ -330,16 +359,22 @@ def query_saig(
     model_name = os.getenv("SAIG_MODEL", "gpt-4o-mini")
     detected_text = ", ".join(sorted(set(detected_objects))) if detected_objects else "none"
     prompt = (
-        "You are SaiG, an underwater AI expert assistant.\n\n"
-        "You help users understand underwater scenes using:\n"
-        "- visual detection results\n"
-        "- context from conversation\n\n"
-        f"Current detected objects:\n{detected_text}\n\n"
-        f"User question:\n{user_prompt}\n\n"
-        "Provide a detailed, clear explanation in paragraph form, not bullet points."
+        "Analyze this underwater frame and respond as SaiG.\n\n"
+        f"Detected objects: {detected_text}\n"
+        f"User request: {user_prompt}\n\n"
+        "Explain scene interpretation, potential threat level, and recommended next monitoring action."
     )
 
-    messages = [{"role": "system", "content": "You are SaiG, an underwater AI expert assistant."}]
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are SaiG, an intelligent underwater surveillance AI assistant. "
+                "Analyze underwater scenes, marine life, submarines, threats, and explain clearly. "
+                "Use the image and detected objects as context."
+            ),
+        }
+    ]
     for message in chat_history[-8:]:
         role = str(message.get("role", "")).strip()
         content = str(message.get("content", "")).strip()
@@ -486,18 +521,68 @@ def _handle_saig_chat_send(
             warning_placeholder.warning(f"SaiG API failed; using fallback analysis. Details: {err}")
 
 
+def _handle_saig_quick_action(
+    quick_requested: bool,
+    latest_frame,
+    detected_objects: List[str],
+    warning_placeholder,
+    debug_enabled: bool = False,
+) -> None:
+    """Run one-click SaiG scene analysis using latest frame and detections."""
+    if not quick_requested:
+        return
+
+    if latest_frame is None:
+        st.session_state.saig_quick_answer = "No visual data available yet"
+        return
+
+    quick_prompt = (
+        "Provide an immediate scene analysis with detected objects, possible risks, "
+        "and the most important monitoring recommendation."
+    )
+    _append_chat_message("user", "Analyze the current frame.")
+
+    _debug_log(debug_enabled, "SaiG quick frame analysis triggered")
+    with st.spinner("Analyzing frame with SaiG..."):
+        try:
+            encoded_image = encode_frame_to_base64(latest_frame)
+            response = query_saig(
+                user_prompt=quick_prompt,
+                image_base64=encoded_image,
+                detected_objects=detected_objects,
+                chat_history=st.session_state.chat_history,
+            )
+            st.session_state.saig_quick_answer = response
+            _append_chat_message("assistant", response)
+        except Exception as err:
+            fallback = _simulated_saig_response(
+                user_prompt=quick_prompt,
+                detected_objects=detected_objects,
+                chat_history=st.session_state.chat_history,
+            )
+            st.session_state.saig_quick_answer = fallback
+            _append_chat_message("assistant", fallback)
+            warning_placeholder.warning(f"SaiG quick analysis failed; using fallback. Details: {err}")
+
+
 def _render_signal_card(
     placeholder,
     title: str,
     value: str,
     tone: str = "neutral",
+    icon: str = "",
+    meta: str = "",
 ) -> None:
-    """Render one glassmorphism dashboard card."""
+    """Render one dashboard signal card."""
+    icon_html = f"<div class='card-icon'>{icon}</div>" if icon else ""
+    meta_html = f"<div class='card-meta'>{meta}</div>" if meta else ""
     placeholder.markdown(
         (
             f"<div class='glass-card card signal-card tone-{tone}'>"
+            f"{icon_html}"
             f"<div class='card-title'>{title}</div>"
             f"<div class='card-value'>{value}</div>"
+            f"{meta_html}"
             "</div>"
         ),
         unsafe_allow_html=True,
@@ -653,30 +738,43 @@ def _append_threat_log(event_time: float, object_name: str, level: int) -> None:
         st.session_state.threat_log = st.session_state.threat_log[-20:]
 
 
-def _render_threat_history(log_placeholder) -> None:
-    """Render recent threat events below video (latest first)."""
+def _render_threat_history_list(log_placeholder) -> None:
+    """Render recent threat events list (latest first)."""
     with log_placeholder.container():
-        st.markdown("### 📜 Threat History")
         recent_events = st.session_state.threat_log[-10:]
         if not recent_events:
             st.markdown(
-                "<div class='glass-card card history-card'>No threat events logged yet.</div>",
+                "<div class='glass-card card history-shell'>No threat events logged yet.</div>",
                 unsafe_allow_html=True,
             )
         else:
-            for event in reversed(recent_events):
-                st.markdown(
-                    (
-                        "<div class='glass-card card history-card'>"
-                        f"[{event['time']:.1f}s] {event['object']} -> Level {event['level']}"
-                        "</div>"
-                    ),
-                    unsafe_allow_html=True,
+            rows = "".join(
+                (
+                    "<div class='history-row'>"
+                    f"<span class='history-time'>[{event['time']:.1f}s]</span> "
+                    f"<span class='history-object'>{event['object']}</span> "
+                    f"<span class='history-level'>Level {event['level']}</span>"
+                    "</div>"
                 )
+                for event in reversed(recent_events)
+            )
+            st.markdown(
+                (
+                    "<div class='glass-card card history-shell'>"
+                    "<div class='history-scroll'>"
+                    f"{rows}"
+                    "</div>"
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
 
-        st.markdown("### 📊 Threat Analytics")
+
+def _render_threat_analytics(analytics_placeholder) -> None:
+    """Render object-count analytics chart from threat log."""
+    with analytics_placeholder.container():
+        st.markdown("<div class='glass-card card analytics-shell'>", unsafe_allow_html=True)
         if st.session_state.threat_log:
-            # Convert log to DataFrame so charting stays explicit and extensible.
             threat_df = pd.DataFrame(st.session_state.threat_log)
             object_counts_df = (
                 threat_df["object"]
@@ -687,7 +785,8 @@ def _render_threat_history(log_placeholder) -> None:
             )
             st.bar_chart(object_counts_df)
         else:
-            st.info("No analytics data available yet.")
+            st.markdown("<div class='card-meta'>No analytics data available yet.</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _prediction_for_timestamp(
@@ -713,53 +812,77 @@ def _render_uploaded_video(
     debug_enabled: bool,
 ) -> None:
     """Run full multimodal pipeline for an uploaded video file."""
-    st.markdown("<div class='section-title'>System Signals</div>", unsafe_allow_html=True)
-    with st.container():
-        st.markdown("")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("### 🔊 Audio Panel")
-            audio_placeholder = st.empty()
-        with col2:
-            st.markdown("### 🐠 Object Panel")
-            object_placeholder = st.empty()
-
-    st.markdown("---")
-    st.markdown("<div class='section-title'>Threat Intelligence</div>", unsafe_allow_html=True)
-    with st.container():
+    st.markdown("<div class='section-title'>Detection</div>", unsafe_allow_html=True)
+    top_col_1, top_col_2, top_col_3, top_col_4 = st.columns(4)
+    with top_col_1:
+        audio_placeholder = st.empty()
+    with top_col_2:
+        object_placeholder = st.empty()
+    with top_col_3:
         alert_placeholder = st.empty()
-        blink_placeholder = st.empty()
-        sound_placeholder = st.empty()
-    st.markdown("<div class='section-title'>Video Stream</div>", unsafe_allow_html=True)
-    with st.container():
-        video_label_placeholder = st.empty()
+    with top_col_4:
         performance_placeholder = st.empty()
+
+    blink_placeholder = st.empty()
+    sound_placeholder = st.empty()
+
+    st.markdown("<div class='section-title'>Detection Feed</div>", unsafe_allow_html=True)
+    st.markdown("<div class='video-shell'>", unsafe_allow_html=True)
+    with st.container():
+        st.markdown("<div class='video-title'>🎥 Live Detection Feed</div>", unsafe_allow_html=True)
+        video_label_placeholder = st.empty()
         frame_placeholder = st.empty()
         progress_bar = st.progress(0.0)
+    st.markdown("</div>", unsafe_allow_html=True)
+
     st.markdown("<div class='section-title'>SaiG Assistant</div>", unsafe_allow_html=True)
-    with st.container():
-        st.markdown("### 🧠 SaiG Assistant")
-        chat_history_placeholder = st.empty()
+    quick_action_col_1, quick_action_col_2, quick_action_col_3 = st.columns([2, 3, 2])
+    with quick_action_col_1:
+        st.empty()
+    with quick_action_col_2:
+        quick_saig = st.button("🧠 Ask SaiG About This Frame", key="upload_quick_saig", type="primary")
+    with quick_action_col_3:
+        st.empty()
+
+    quick_answer_placeholder = st.empty()
+
+    st.markdown("### 💬 Continue Conversation with SaiG")
+    chat_history_placeholder = st.empty()
+    _render_saig_chat_history(chat_history_placeholder, st.session_state.chat_history)
+
+    chat_col_1, chat_col_2, chat_col_3 = st.columns([6, 1, 1])
+    with chat_col_1:
         chat_prompt = st.text_input(
             "Ask SaiG about this scene...",
-            key="saig_chat_input_uploaded",
+            key="saig_chat_input_upload",
             label_visibility="collapsed",
             placeholder="Ask SaiG about this scene...",
         )
-        chat_action_col_1, chat_action_col_2 = st.columns([1, 1])
-        with chat_action_col_1:
-            send_chat = st.button("Send", key="saig_chat_send_uploaded")
-        with chat_action_col_2:
-            clear_chat = st.button("🧹 Clear Chat", key="saig_chat_clear_uploaded")
+    with chat_col_2:
+        send_chat = st.button("Send", key="saig_chat_send_upload", type="primary")
+    with chat_col_3:
+        clear_chat = st.button("Clear Chat", key="saig_chat_clear_upload", type="secondary")
 
-        if clear_chat:
-            st.session_state.chat_history = []
-            st.session_state.saig_chat_input_uploaded = ""
+    if clear_chat:
+        st.session_state.chat_history = []
+        st.session_state.saig_quick_answer = ""
+        st.session_state.saig_chat_input_upload = ""
 
-        saig_warning_placeholder = st.empty()
-        _render_saig_chat_history(chat_history_placeholder, st.session_state.chat_history)
-    st.markdown("<div class='section-title'>Logs & Analytics</div>", unsafe_allow_html=True)
-    threat_log_placeholder = st.empty()
+    warning_placeholder = st.empty()
+    if st.session_state.get("saig_quick_answer"):
+        quick_answer_placeholder.markdown(
+            f"<div class='glass-card card saig-card'>{st.session_state.saig_quick_answer}</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<div class='section-title'>Detection Insights</div>", unsafe_allow_html=True)
+    bottom_col_1, bottom_col_2 = st.columns(2)
+    with bottom_col_1:
+        st.markdown("### 📜 Threat History")
+        threat_history_placeholder = st.empty()
+    with bottom_col_2:
+        st.markdown("### 📊 Object Frequency / Threat Trend")
+        threat_analytics_placeholder = st.empty()
 
     with st.spinner("Processing video..."):
         yolo_model, audio_model, class_to_idx, device, yolo_device = load_models()
@@ -779,13 +902,14 @@ def _render_uploaded_video(
     audio_history: Deque[str] = deque(maxlen=3)
     object_history: ThreatHistory = []
     latest_frame = None
-    saig_chat_send_pending = send_chat
     last_dominant_object: str | None = None
     stable_start_time: float | None = None
     last_alert_object: str | None = None
     last_processed_time = 0.0
     frame_counter = 0
     target_interval = 1.0 / max(target_fps, 1)
+    quick_saig_pending = quick_saig
+    send_chat_pending = send_chat
 
     source_fps = capture.get(cv2.CAP_PROP_FPS)
     if source_fps <= 0:
@@ -837,9 +961,11 @@ def _render_uploaded_video(
             smoothed_audio = Counter(audio_history).most_common(1)[0][0]
             _render_signal_card(
                 audio_placeholder,
-                "Audio Intelligence",
-                f"🔊 {smoothed_audio} ({current_conf:.2f})",
+                "Audio Detection",
+                f"{smoothed_audio}",
                 tone="neutral",
+                icon="🔊",
+                meta=f"Confidence {current_conf:.2f}",
             )
 
             inference_start = time.time()
@@ -913,9 +1039,10 @@ def _render_uploaded_video(
             objects_str = ", ".join(sorted(current_objects)) if current_objects else "No objects detected"
             _render_signal_card(
                 object_placeholder,
-                "Object Intelligence",
-                f"🐠 {objects_str}",
+                "Objects Detected",
+                objects_str,
                 tone="neutral",
+                icon="🐠",
             )
 
             _render_video_label(video_label_placeholder, high_threat_active=high_threat_active)
@@ -925,16 +1052,6 @@ def _render_uploaded_video(
             st.session_state.latest_frame = latest_frame
             st.session_state.latest_detected_objects = sorted(current_objects)
 
-            _handle_saig_chat_send(
-                send_requested=saig_chat_send_pending,
-                prompt_text=chat_prompt,
-                latest_frame=latest_frame,
-                detected_objects=st.session_state.get("latest_detected_objects", []),
-                warning_placeholder=saig_warning_placeholder,
-                debug_enabled=debug_enabled,
-            )
-            saig_chat_send_pending = False
-
             frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
             frame_placeholder.image(frame, channels="RGB", use_container_width=True)
 
@@ -942,23 +1059,39 @@ def _render_uploaded_video(
             fps = 1.0 / frame_elapsed
             _render_performance_metrics(performance_placeholder, fps=fps, inference_ms=inference_ms)
 
+            if quick_saig_pending:
+                _handle_saig_quick_action(
+                    quick_requested=True,
+                    latest_frame=latest_frame,
+                    detected_objects=st.session_state.latest_detected_objects,
+                    warning_placeholder=warning_placeholder,
+                    debug_enabled=debug_enabled,
+                )
+                quick_saig_pending = False
+                if st.session_state.get("saig_quick_answer"):
+                    quick_answer_placeholder.markdown(
+                        f"<div class='glass-card card saig-card'>{st.session_state.saig_quick_answer}</div>",
+                        unsafe_allow_html=True,
+                    )
+
+            if send_chat_pending:
+                _handle_saig_chat_send(
+                    send_requested=True,
+                    prompt_text=chat_prompt,
+                    latest_frame=latest_frame,
+                    detected_objects=st.session_state.latest_detected_objects,
+                    warning_placeholder=warning_placeholder,
+                    debug_enabled=debug_enabled,
+                )
+                send_chat_pending = False
+                _render_saig_chat_history(chat_history_placeholder, st.session_state.chat_history)
+
             current_frame = capture.get(cv2.CAP_PROP_POS_FRAMES)
             total_frames = capture.get(cv2.CAP_PROP_FRAME_COUNT)
             progress = current_frame / total_frames if total_frames > 0 else 0.0
             progress_bar.progress(min(max(progress, 0.0), 1.0))
-            _render_saig_chat_history(chat_history_placeholder, st.session_state.chat_history)
-            _render_threat_history(threat_log_placeholder)
-
-        if saig_chat_send_pending:
-            _handle_saig_chat_send(
-                send_requested=True,
-                prompt_text=chat_prompt,
-                latest_frame=latest_frame,
-                detected_objects=st.session_state.get("latest_detected_objects", []),
-                warning_placeholder=saig_warning_placeholder,
-                debug_enabled=debug_enabled,
-            )
-        _render_saig_chat_history(chat_history_placeholder, st.session_state.chat_history)
+            _render_threat_history_list(threat_history_placeholder)
+            _render_threat_analytics(threat_analytics_placeholder)
     finally:
         writer.release()
         capture.release()
@@ -984,52 +1117,76 @@ def _run_webcam_mode(
     debug_enabled: bool,
 ) -> None:
     """Run webcam detection stream using YOLO only."""
-    st.markdown("<div class='section-title'>System Signals</div>", unsafe_allow_html=True)
-    with st.container():
-        st.markdown("")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("### 🔊 Audio Panel")
-            audio_placeholder = st.empty()
-        with col2:
-            st.markdown("### 🐠 Object Panel")
-            object_placeholder = st.empty()
-
-    st.markdown("---")
-    st.markdown("<div class='section-title'>Threat Intelligence</div>", unsafe_allow_html=True)
-    with st.container():
+    st.markdown("<div class='section-title'>Detection</div>", unsafe_allow_html=True)
+    top_col_1, top_col_2, top_col_3, top_col_4 = st.columns(4)
+    with top_col_1:
+        audio_placeholder = st.empty()
+    with top_col_2:
+        object_placeholder = st.empty()
+    with top_col_3:
         alert_placeholder = st.empty()
-        blink_placeholder = st.empty()
-        sound_placeholder = st.empty()
-    st.markdown("<div class='section-title'>Video Stream</div>", unsafe_allow_html=True)
-    with st.container():
-        video_label_placeholder = st.empty()
+    with top_col_4:
         performance_placeholder = st.empty()
-        frame_placeholder = st.empty()
-    st.markdown("<div class='section-title'>SaiG Assistant</div>", unsafe_allow_html=True)
+
+    blink_placeholder = st.empty()
+    sound_placeholder = st.empty()
+
+    st.markdown("<div class='section-title'>Detection Feed</div>", unsafe_allow_html=True)
+    st.markdown("<div class='video-shell'>", unsafe_allow_html=True)
     with st.container():
-        st.markdown("### 🧠 SaiG Assistant")
-        chat_history_placeholder = st.empty()
+        st.markdown("<div class='video-title'>🎥 Live Detection Feed</div>", unsafe_allow_html=True)
+        video_label_placeholder = st.empty()
+        frame_placeholder = st.empty()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("<div class='section-title'>SaiG Assistant</div>", unsafe_allow_html=True)
+    quick_action_col_1, quick_action_col_2, quick_action_col_3 = st.columns([2, 3, 2])
+    with quick_action_col_1:
+        st.empty()
+    with quick_action_col_2:
+        quick_saig = st.button("🧠 Ask SaiG About This Frame", key="webcam_quick_saig", type="primary")
+    with quick_action_col_3:
+        st.empty()
+
+    quick_answer_placeholder = st.empty()
+
+    st.markdown("### 💬 Continue Conversation with SaiG")
+    chat_history_placeholder = st.empty()
+    _render_saig_chat_history(chat_history_placeholder, st.session_state.chat_history)
+
+    chat_col_1, chat_col_2, chat_col_3 = st.columns([6, 1, 1])
+    with chat_col_1:
         chat_prompt = st.text_input(
             "Ask SaiG about this scene...",
             key="saig_chat_input_webcam",
             label_visibility="collapsed",
             placeholder="Ask SaiG about this scene...",
         )
-        chat_action_col_1, chat_action_col_2 = st.columns([1, 1])
-        with chat_action_col_1:
-            send_chat = st.button("Send", key="saig_chat_send_webcam")
-        with chat_action_col_2:
-            clear_chat = st.button("🧹 Clear Chat", key="saig_chat_clear_webcam")
+    with chat_col_2:
+        send_chat = st.button("Send", key="saig_chat_send_webcam", type="primary")
+    with chat_col_3:
+        clear_chat = st.button("Clear Chat", key="saig_chat_clear_webcam", type="secondary")
 
-        if clear_chat:
-            st.session_state.chat_history = []
-            st.session_state.saig_chat_input_webcam = ""
+    if clear_chat:
+        st.session_state.chat_history = []
+        st.session_state.saig_quick_answer = ""
+        st.session_state.saig_chat_input_webcam = ""
 
-        saig_warning_placeholder = st.empty()
-        _render_saig_chat_history(chat_history_placeholder, st.session_state.chat_history)
-    st.markdown("<div class='section-title'>Logs & Analytics</div>", unsafe_allow_html=True)
-    threat_log_placeholder = st.empty()
+    warning_placeholder = st.empty()
+    if st.session_state.get("saig_quick_answer"):
+        quick_answer_placeholder.markdown(
+            f"<div class='glass-card card saig-card'>{st.session_state.saig_quick_answer}</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<div class='section-title'>Detection Insights</div>", unsafe_allow_html=True)
+    bottom_col_1, bottom_col_2 = st.columns(2)
+    with bottom_col_1:
+        st.markdown("### 📜 Threat History")
+        threat_history_placeholder = st.empty()
+    with bottom_col_2:
+        st.markdown("### 📊 Object Frequency / Threat Trend")
+        threat_analytics_placeholder = st.empty()
 
     with st.spinner("Processing video..."):
         yolo_model, _, _, _, yolo_device = load_models()
@@ -1046,7 +1203,6 @@ def _run_webcam_mode(
         return
     object_history: ThreatHistory = []
     latest_frame = None
-    saig_chat_send_pending = send_chat
     last_dominant_object: str | None = None
     stable_start_time: float | None = None
     last_alert_object: str | None = None
@@ -1054,6 +1210,8 @@ def _run_webcam_mode(
     last_processed_time = 0.0
     frame_counter = 0
     target_interval = 1.0 / max(target_fps, 1)
+    quick_saig_pending = quick_saig
+    send_chat_pending = send_chat
 
     try:
         max_frames = 600
@@ -1152,16 +1310,19 @@ def _run_webcam_mode(
 
             _render_signal_card(
                 audio_placeholder,
-                "Audio Intelligence",
-                "🔊 Webcam mode (N/A)",
+                "Audio Detection",
+                "Webcam mode",
                 tone="neutral",
+                icon="🔊",
+                meta="N/A",
             )
             objects_str = ", ".join(sorted(current_objects)) if current_objects else "No objects detected"
             _render_signal_card(
                 object_placeholder,
-                "Object Intelligence",
-                f"🐠 {objects_str}",
+                "Objects Detected",
+                objects_str,
                 tone="neutral",
+                icon="🐠",
             )
 
             _render_video_label(video_label_placeholder, high_threat_active=high_threat_active)
@@ -1170,34 +1331,41 @@ def _run_webcam_mode(
             st.session_state.latest_frame = latest_frame
             st.session_state.latest_detected_objects = sorted(current_objects)
 
-            _handle_saig_chat_send(
-                send_requested=saig_chat_send_pending,
-                prompt_text=chat_prompt,
-                latest_frame=latest_frame,
-                detected_objects=st.session_state.get("latest_detected_objects", []),
-                warning_placeholder=saig_warning_placeholder,
-                debug_enabled=debug_enabled,
-            )
-            saig_chat_send_pending = False
-
             rgb_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
             frame_placeholder.image(rgb_frame, channels="RGB", use_container_width=True)
             frame_elapsed = max(time.time() - loop_start, 1e-9)
             fps = 1.0 / frame_elapsed
             _render_performance_metrics(performance_placeholder, fps=fps, inference_ms=inference_ms)
-            _render_saig_chat_history(chat_history_placeholder, st.session_state.chat_history)
-            _render_threat_history(threat_log_placeholder)
 
-        if saig_chat_send_pending:
-            _handle_saig_chat_send(
-                send_requested=True,
-                prompt_text=chat_prompt,
-                latest_frame=latest_frame,
-                detected_objects=st.session_state.get("latest_detected_objects", []),
-                warning_placeholder=saig_warning_placeholder,
-                debug_enabled=debug_enabled,
-            )
-        _render_saig_chat_history(chat_history_placeholder, st.session_state.chat_history)
+            if quick_saig_pending:
+                _handle_saig_quick_action(
+                    quick_requested=True,
+                    latest_frame=latest_frame,
+                    detected_objects=st.session_state.latest_detected_objects,
+                    warning_placeholder=warning_placeholder,
+                    debug_enabled=debug_enabled,
+                )
+                quick_saig_pending = False
+                if st.session_state.get("saig_quick_answer"):
+                    quick_answer_placeholder.markdown(
+                        f"<div class='glass-card card saig-card'>{st.session_state.saig_quick_answer}</div>",
+                        unsafe_allow_html=True,
+                    )
+
+            if send_chat_pending:
+                _handle_saig_chat_send(
+                    send_requested=True,
+                    prompt_text=chat_prompt,
+                    latest_frame=latest_frame,
+                    detected_objects=st.session_state.latest_detected_objects,
+                    warning_placeholder=warning_placeholder,
+                    debug_enabled=debug_enabled,
+                )
+                send_chat_pending = False
+                _render_saig_chat_history(chat_history_placeholder, st.session_state.chat_history)
+
+            _render_threat_history_list(threat_history_placeholder)
+            _render_threat_analytics(threat_analytics_placeholder)
     finally:
         capture.release()
 
@@ -1210,173 +1378,266 @@ def main() -> None:
     """Render Streamlit UI and route to uploaded-video or webcam mode."""
     st.set_page_config(page_title="Underwater AI Detection System", layout="wide")
 
-    # Theme and animation logic is centralized here for easier maintenance.
     st.markdown(
         """
 <style>
 .stApp {
-    background: linear-gradient(180deg, #0a2540, #001f3f, #000814);
-    color: #ffffff;
+    background: #F5F6FA;
+    color: #4A4A4A;
+}
+
+:root {
+    --bg: #F5F6FA;
+    --surface: #FFFFFF;
+    --surface-soft: #EEF0F8;
+    --border: #E6E8F0;
+    --text-primary: #4A4A4A;
+    --text-muted: #707090;
+    --accent: #0F0E47;
+    --accent-2: #272757;
+    --accent-3: #505081;
+    --accent-4: #8686AC;
+    --success: #5cb85c;
+    --warning: #f0ad4e;
+    --danger: #d9534f;
+    --space-1: 8px;
+    --space-2: 16px;
+    --space-3: 24px;
+    --space-4: 32px;
 }
 
 h1 {
-    color: #00e5ff;
-    text-shadow: 0 0 14px rgba(0, 229, 255, 0.45);
+    color: #0F0E47;
+    font-size: 2.55rem;
+    font-weight: 800;
+    line-height: 1.15;
+    margin-bottom: var(--space-1);
 }
 
 h2, h3 {
-    color: #4fc3f7;
+    color: #272757;
+    font-weight: 700;
 }
 
 .main .block-container {
-    padding-top: 1.6rem;
-    padding-bottom: 2.0rem;
+    padding-top: var(--space-3);
+    padding-bottom: var(--space-4);
+    max-width: 1320px;
+    padding-left: var(--space-3);
+    padding-right: var(--space-3);
+}
+
+.dashboard-header {
+    text-align: center;
+    margin-top: var(--space-1);
+    margin-bottom: var(--space-3);
+    background: linear-gradient(145deg, #ffffff 0%, #f8f9fe 100%);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: var(--space-3) var(--space-2);
+}
+
+.dashboard-subtitle {
+    color: #505081;
+    font-size: 1rem;
+    margin-top: var(--space-1);
+    font-weight: 500;
+    line-height: 1.45;
 }
 
 .section-title {
-    color: #00e5ff;
-    font-weight: 700;
-    margin-top: 1.4rem;
-    margin-bottom: 0.9rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    color: #272757;
+    font-weight: 600;
+    margin-top: var(--space-3);
+    margin-bottom: var(--space-2);
+    font-size: 1.08rem;
 }
 
+.card,
 .glass-card {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.16);
-    backdrop-filter: blur(10px);
-    border-radius: 16px;
-    padding: 16px;
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
-    margin-bottom: 0.8rem;
+    background: var(--surface);
+    border-radius: 12px;
+    padding: 14px var(--space-2);
+    margin-bottom: var(--space-2);
+    border: 1px solid var(--border);
+    box-shadow: 0 4px 14px rgba(15, 14, 71, 0.08);
 }
 
 .card:hover {
-    transform: scale(1.02);
-    transition: 0.3s ease;
+    border-color: #8686AC;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 8px 18px rgba(15, 14, 71, 0.12);
+}
+
+.signal-card {
+    min-height: 144px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: var(--space-1);
+    border-top: 3px solid #0F0E47;
+}
+
+.card-icon {
+    font-size: 1.22rem;
+    line-height: 1;
+}
+
+[data-testid="stHorizontalBlock"] > [data-testid="column"]:nth-child(1) .signal-card {
+    border-top-color: #8686AC;
+}
+
+[data-testid="stHorizontalBlock"] > [data-testid="column"]:nth-child(2) .signal-card {
+    border-top-color: #505081;
+}
+
+[data-testid="stHorizontalBlock"] > [data-testid="column"]:nth-child(3) .signal-card {
+    border-top-color: #272757;
+}
+
+[data-testid="stHorizontalBlock"] > [data-testid="column"]:nth-child(4) .signal-card {
+    border-top-color: #0F0E47;
 }
 
 .signal-card .card-title,
 .threat-card .card-title,
 .history-card {
-    color: #00e5ff;
-    font-size: 0.9rem;
+    color: var(--text-muted);
+    font-size: 0.82rem;
     font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
 }
 
 .card-value {
-    margin-top: 0.35rem;
-    color: #ffffff;
-    font-size: 1.08rem;
-    font-weight: 600;
+    margin-top: 0;
+    color: #272757;
+    font-size: 1.56rem;
+    font-weight: 700;
+    line-height: 1.2;
 }
 
-.tone-neutral {
-    box-shadow: 0 0 16px rgba(79, 195, 247, 0.16);
-}
-
-.tone-low {
-    box-shadow: 0 0 16px rgba(76, 245, 181, 0.24);
+.card-meta {
+    font-size: 0.8rem;
+    color: var(--text-muted);
 }
 
 .threat-high {
-    border-color: rgba(255, 77, 79, 0.8);
-    box-shadow: 0 0 22px rgba(255, 77, 79, 0.62);
+    border-color: var(--danger);
 }
 
 .threat-medium {
-    border-color: rgba(255, 170, 0, 0.7);
-    box-shadow: 0 0 20px rgba(255, 170, 0, 0.4);
+    border-color: var(--warning);
 }
 
 .threat-low {
-    border-color: rgba(79, 195, 247, 0.6);
-    box-shadow: 0 0 18px rgba(79, 195, 247, 0.32);
+    border-color: var(--success);
 }
 
 .video-label {
     text-align: center;
     font-weight: 700;
-    margin-bottom: 0.5rem;
-}
-
-.video-label-safe {
-    box-shadow: 0 0 16px rgba(0, 229, 255, 0.22);
+    margin-bottom: var(--space-2);
+    color: #272757;
 }
 
 .video-label-danger {
-    border-color: rgba(255, 77, 79, 0.85);
-    box-shadow: 0 0 22px rgba(255, 77, 79, 0.68);
+    border-color: var(--danger);
 }
 
-.signal-card,
-.threat-card,
-.history-card,
-.video-label {
-    box-shadow: 0 0 10px rgba(0, 229, 255, 0.3);
+button[kind],
+.stButton > button {
+    border-radius: 10px;
+    border: 1px solid #0F0E47;
+    background: #0F0E47;
+    color: #ffffff;
+    min-height: 40px;
+    height: 40px;
+    padding: 0.4rem 0.95rem;
+    font-weight: 600;
+    width: 100%;
 }
 
-@keyframes pulse {
-    0% { box-shadow: 0 0 5px red; }
-    50% { box-shadow: 0 0 20px red; }
-    100% { box-shadow: 0 0 5px red; }
+.stButton > button[kind="secondary"] {
+    background: #8686AC;
+    border-color: #8686AC;
+    color: #FFFFFF;
 }
 
-.pulse-high {
-    animation: pulse 2s infinite;
+button[kind]:hover,
+.stButton > button:hover {
+    background: #272757;
+    border-color: #272757;
 }
 
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #071628, #0a1f38);
-    border-right: 1px solid rgba(79, 195, 247, 0.22);
+.stButton > button[kind="secondary"]:hover {
+    background: #505081;
+    border-color: #505081;
+    color: #FFFFFF;
 }
 
-[data-testid="stSidebar"] * {
-    color: #e8f7ff;
+[data-baseweb="slider"],
+[data-baseweb="select"],
+[data-testid="stToggle"] {
+    margin-top: var(--space-1);
+    margin-bottom: var(--space-2);
 }
 
-[data-testid="stSidebar"] button,
-[data-testid="stSidebar"] [role="button"] {
+label, .stSelectbox label, .stSlider label {
+    color: var(--text-muted);
+    font-weight: 500;
+    font-size: 0.9rem;
+    letter-spacing: 0.01em;
+}
+
+[data-testid="stTextInput"] input {
+    min-height: 40px;
+    height: 40px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: #FFFFFF;
+    color: #272757;
+}
+
+[data-testid="stFileUploaderDropzone"] {
+    background: var(--surface-soft);
+    border: 1px dashed var(--border);
     border-radius: 12px;
 }
 
-[data-testid="stSidebar"] button:hover,
-[data-testid="stSidebar"] [role="button"]:hover {
-    box-shadow: 0 0 12px rgba(0, 229, 255, 0.35);
-}
-
 [data-testid="stImage"] img {
-    border-radius: 16px;
-    border: 1px solid rgba(79, 195, 247, 0.28);
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    box-shadow: 0 5px 14px rgba(15, 14, 71, 0.08);
 }
 
 .alert-blink {
-    color: #ff4d4f;
+    color: var(--danger);
     font-weight: 700;
     text-align: center;
     margin-bottom: 0.35rem;
 }
 
 .saig-card {
-    border-color: rgba(0, 229, 255, 0.38);
-    box-shadow: 0 0 18px rgba(0, 229, 255, 0.22);
+    border-color: var(--border);
 }
 
 .saig-chat-shell {
-    padding: 10px;
+    padding: 10px 8px;
+    background: #FFFFFF;
 }
 
 .saig-chat-history {
-    max-height: 280px;
+    height: 340px;
     overflow-y: auto;
-    padding-right: 4px;
+    padding-right: 6px;
 }
 
 .chat-row {
     display: flex;
-    margin-bottom: 0.45rem;
+    margin-bottom: 10px;
 }
 
 .chat-row-user {
@@ -1388,163 +1649,371 @@ h2, h3 {
 }
 
 .chat-bubble {
-    max-width: 85%;
+    max-width: 82%;
     border-radius: 14px;
-    padding: 10px 12px;
-    line-height: 1.35;
-    font-size: 0.96rem;
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    padding: 10px 14px;
+    line-height: 1.42;
+    font-size: 0.95rem;
+    border: 1px solid transparent;
 }
 
 .chat-bubble-user {
-    background: rgba(0, 229, 255, 0.16);
-    border-color: rgba(0, 229, 255, 0.45);
+    background: #0F0E47;
+    border-color: #0F0E47;
+    color: #ffffff;
 }
 
 .chat-bubble-assistant {
-    background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(79, 195, 247, 0.42);
+    background: #E8EAF8;
+    border-color: #DDE1F4;
+    color: #272757;
+}
+
+[data-testid="column"] > div {
+    gap: 10px;
+}
+
+.video-label {
+    margin-top: var(--space-1);
+    margin-bottom: var(--space-2);
+}
+
+.controls-shell {
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: var(--space-2);
+    margin-bottom: var(--space-1);
+}
+
+.video-shell {
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: var(--space-3);
+    margin-top: var(--space-2);
+    margin-bottom: var(--space-3);
+    background: #ffffff;
+    box-shadow: 0 4px 12px rgba(15, 14, 71, 0.06);
+    border-top: 3px solid #0F0E47;
+}
+
+.video-title {
+    text-align: center;
+    font-weight: 700;
+    font-size: 1.05rem;
+    margin-bottom: var(--space-2);
+    color: #272757;
+}
+
+.history-shell,
+.analytics-shell {
+    min-height: 320px;
+    max-height: 320px;
+}
+
+.history-scroll {
+    max-height: 280px;
+    overflow-y: auto;
+}
+
+.history-row {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-1);
+    padding: 8px 0;
+    border-bottom: 1px solid #ECEEF6;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+}
+
+.history-row:last-child {
+    border-bottom: none;
+}
+
+.history-time {
+    color: var(--text-muted);
 }
 
 .footer-note {
     text-align: center;
-    color: rgba(232, 247, 255, 0.88);
-    margin-top: 1.8rem;
+    color: #707090;
+    margin-top: 2rem;
     margin-bottom: 0.5rem;
     font-size: 0.95rem;
+}
+
+p,
+.stCaption,
+.stMarkdown small,
+label {
+    color: #4A4A4A;
+    font-size: 0.98rem;
+    line-height: 1.5;
+}
+
+section[data-testid="stSidebar"] {
+    background: #0F0E47;
+    color: #FFFFFF;
+}
+
+section[data-testid="stSidebar"] * {
+    color: #FFFFFF;
+}
+
+section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"],
+section[data-testid="stSidebar"] [data-baseweb="select"],
+section[data-testid="stSidebar"] [data-testid="stTextInput"] input,
+section[data-testid="stSidebar"] [data-testid="stNumberInput"] input,
+section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
+section[data-testid="stSidebar"] .stButton > button {
+    background: #272757;
+    border-color: #272757;
+    color: #FFFFFF;
+}
+
+section[data-testid="stSidebar"] .stButton > button:hover {
+    background: #8686AC;
+    border-color: #8686AC;
+}
+
+@media (max-width: 900px) {
+    .main .block-container {
+        padding-top: var(--space-2);
+        padding-bottom: var(--space-3);
+        padding-left: var(--space-2);
+        padding-right: var(--space-2);
+    }
+
+    .section-title {
+        margin-top: var(--space-3);
+        margin-bottom: var(--space-2);
+    }
+
+    .chat-bubble {
+        max-width: 100%;
+    }
+
+    .dashboard-header {
+        padding: var(--space-2);
+    }
+
+    .signal-card {
+        min-height: 132px;
+    }
+
+    .video-shell {
+        padding: var(--space-2);
+    }
 }
 </style>
 """,
         unsafe_allow_html=True,
     )
 
-    with st.container():
-        st.markdown("")
     st.markdown(
-        "<h1 style='text-align: center;'>🌊 Underwater AI Monitoring System</h1>",
+        (
+            "<div class='dashboard-header'>"
+            "<h1>🌊 Underwater AI Monitoring System</h1>"
+            "<div class='dashboard-subtitle'>"
+            "Real-time Detection • Threat Intelligence • SaiG Assistant"
+            "</div>"
+            "</div>"
+        ),
         unsafe_allow_html=True,
     )
-    st.markdown(
-        "<p style='text-align: center;'>Real-time Marine Object & Acoustic Intelligence</p>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("")
     st.markdown("---")
 
     if "webcam_active" not in st.session_state:
         st.session_state.webcam_active = False
+    if "webcam_status" not in st.session_state:
+        st.session_state.webcam_status = False
+    if "video_path" not in st.session_state:
+        st.session_state.video_path = None
+    if "uploaded_video_signature" not in st.session_state:
+        st.session_state.uploaded_video_signature = None
     if "confidence_threshold" not in st.session_state:
         st.session_state.confidence_threshold = 0.3
+    if "enable_threat" not in st.session_state:
+        st.session_state.enable_threat = False
+    if "enable_sound" not in st.session_state:
+        st.session_state.enable_sound = False
+    if "stability_threshold" not in st.session_state:
+        st.session_state.stability_threshold = 3.0
+    if "target_fps" not in st.session_state:
+        st.session_state.target_fps = DEFAULT_TARGET_FPS
+    if "frame_skip" not in st.session_state:
+        st.session_state.frame_skip = DEFAULT_FRAME_SKIP
+    if "inference_size" not in st.session_state:
+        st.session_state.inference_size = DEFAULT_INFERENCE_SIZE
     if "threat_log" not in st.session_state:
         st.session_state.threat_log = []
     if "latest_frame" not in st.session_state:
         st.session_state.latest_frame = None
     if "latest_detected_objects" not in st.session_state:
         st.session_state.latest_detected_objects = []
+    if "detected_objects" not in st.session_state:
+        st.session_state.detected_objects = []
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
     if "model_status" not in st.session_state:
         st.session_state.model_status = "Loaded" if YOLO_WEIGHTS_PATH.exists() else "Training"
     if "debug_mode" not in st.session_state:
         st.session_state.debug_mode = False
+    if "run_detection" not in st.session_state:
+        st.session_state.run_detection = False
+    if "saig_quick_answer" not in st.session_state:
+        st.session_state.saig_quick_answer = ""
 
-    st.sidebar.title("⚙️ Controls")
-    debug_mode = st.sidebar.toggle("🪵 Debug Logs", value=st.session_state.debug_mode)
-    st.session_state.debug_mode = debug_mode
+    debug_mode = bool(st.session_state.debug_mode)
 
     startup_status, startup_error = _run_startup_validation(debug_mode)
+    st.markdown("<div class='section-title'>Controls Panel</div>", unsafe_allow_html=True)
     _render_system_status_panel(startup_status)
     if startup_error:
         st.error(f"Startup validation failed: {startup_error}")
         st.stop()
 
-    st.sidebar.markdown("### 🎛 Input")
-    uploaded_video = st.sidebar.file_uploader("Upload video (mp4)", type=["mp4"])
-    webcam_mode = st.sidebar.checkbox("Use webcam mode")
-    live_mode = st.sidebar.toggle("🔴 Live Mode", value=st.session_state.webcam_active)
-    enable_threat = st.sidebar.toggle(
-        "🚨 Enable Threat Detection",
-        help="Threat levels: 1-3 low, 4-6 medium, 7-10 high. Alerts stabilize using the slider below.",
+    st.markdown("<div class='controls-shell'>", unsafe_allow_html=True)
+    with st.container(border=False):
+        controls_left, controls_right = st.columns(2)
+
+        with controls_left:
+            st.markdown("### Input Panel")
+            uploaded_video = st.file_uploader("Upload video (mp4)", type=["mp4"], key="singlepage_video_upload")
+            if uploaded_video is not None:
+                uploaded_bytes = uploaded_video.getvalue()
+                signature = (uploaded_video.name, len(uploaded_bytes))
+                if signature != st.session_state.uploaded_video_signature:
+                    old_video_path = st.session_state.video_path
+                    if old_video_path:
+                        Path(old_video_path).unlink(missing_ok=True)
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
+                        tmp_file.write(uploaded_bytes)
+                        st.session_state.video_path = str(Path(tmp_file.name))
+                        st.session_state.uploaded_video_signature = signature
+                    st.success("Video uploaded and ready.")
+
+            st.session_state.webcam_status = st.toggle(
+                "🔴 Live camera",
+                value=st.session_state.webcam_status,
+                key="singlepage_webcam_toggle",
+            )
+
+            if st.session_state.video_path:
+                st.caption(f"Selected video: {Path(st.session_state.video_path).name}")
+
+            action_col_1, action_col_2, action_col_3 = st.columns([2, 2, 2])
+            with action_col_1:
+                if st.button("Start Detection", key="singlepage_start_detection", type="primary"):
+                    st.session_state.run_detection = True
+                    st.session_state.webcam_active = st.session_state.webcam_status
+            with action_col_2:
+                if st.button("Stop Detection", key="singlepage_stop_detection", type="secondary"):
+                    st.session_state.run_detection = False
+                    st.session_state.webcam_active = False
+            with action_col_3:
+                if st.button("Clear Threat Log", key="singlepage_clear_threat_log", type="secondary"):
+                    st.session_state.threat_log = []
+
+        with controls_right:
+            st.markdown("### Control Settings")
+            st.session_state.enable_threat = st.toggle(
+                "Enable Threat Detection",
+                value=st.session_state.enable_threat,
+                key="singlepage_enable_threat",
+            )
+            with st.expander("⚙ Advanced Settings", expanded=False):
+                st.session_state.target_fps = st.slider(
+                    "Target FPS",
+                    min_value=10,
+                    max_value=30,
+                    value=int(st.session_state.target_fps),
+                    step=1,
+                    key="singlepage_target_fps",
+                )
+                st.session_state.frame_skip = st.slider(
+                    "Frame Skip",
+                    min_value=1,
+                    max_value=4,
+                    value=int(st.session_state.frame_skip),
+                    step=1,
+                    key="singlepage_frame_skip",
+                )
+                st.session_state.inference_size = st.select_slider(
+                    "Inference Size",
+                    options=[320, 416, 512, 640],
+                    value=int(st.session_state.inference_size),
+                    key="singlepage_inference_size",
+                )
+                st.session_state.enable_sound = st.toggle(
+                    "Enable Sound Alert",
+                    value=st.session_state.enable_sound,
+                    key="singlepage_enable_sound",
+                )
+                st.session_state.confidence_threshold = st.slider(
+                    "Confidence Threshold",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=float(st.session_state.confidence_threshold),
+                    step=0.01,
+                    key="singlepage_confidence_threshold",
+                )
+                st.session_state.stability_threshold = st.slider(
+                    "Stability Duration (seconds)",
+                    min_value=1.0,
+                    max_value=5.0,
+                    value=float(st.session_state.stability_threshold),
+                    step=0.5,
+                    key="singlepage_stability_threshold",
+                )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.session_state.webcam_active = bool(
+        st.session_state.webcam_status and st.session_state.run_detection
     )
-    enable_sound = st.sidebar.toggle("🔊 Enable Sound Alert")
-    if st.sidebar.button("🧹 Clear Threat Log"):
-        st.session_state.threat_log = []
-    stability_threshold = st.sidebar.slider(
-        "Stability Duration (seconds)",
-        min_value=1.0,
-        max_value=5.0,
-        value=3.0,
-        step=0.5,
-        help="Higher values reduce flicker by requiring the same dominant object to persist longer before alerting.",
-    )
-    st.sidebar.markdown("### 🎯 Detection")
-    confidence_threshold = st.sidebar.slider(
-        "Confidence Threshold",
-        min_value=0.0,
-        max_value=1.0,
-        value=float(st.session_state.confidence_threshold),
-        step=0.01,
-    )
-    st.sidebar.markdown("### ⚡ Performance")
-    target_fps = st.sidebar.slider(
-        "Target Processing FPS",
-        min_value=10,
-        max_value=30,
-        value=DEFAULT_TARGET_FPS,
-        step=1,
-        help="Limits how often frames are processed to keep the UI responsive.",
-    )
-    frame_skip = st.sidebar.slider(
-        "Process Every Nth Frame",
-        min_value=1,
-        max_value=4,
-        value=DEFAULT_FRAME_SKIP,
-        step=1,
-        help="Higher values reduce compute by skipping intermediate frames.",
-    )
-    inference_size = st.sidebar.select_slider(
-        "Inference Resolution",
-        options=[320, 416, 512, 640],
-        value=DEFAULT_INFERENCE_SIZE,
-        help="Lower resolution improves speed at some accuracy cost.",
-    )
-    st.session_state.confidence_threshold = confidence_threshold
-    st.session_state.webcam_active = live_mode
 
     try:
-        if uploaded_video is not None:
-            if webcam_mode:
-                st.warning("Webcam mode is ignored while uploaded video is selected.")
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
-                tmp_file.write(uploaded_video.read())
-                temp_video_path = Path(tmp_file.name)
-
-            try:
-                _render_uploaded_video(
-                    temp_video_path,
-                    enable_threat=enable_threat,
-                    enable_sound=enable_sound,
-                    stability_threshold=stability_threshold,
-                    target_fps=target_fps,
-                    frame_skip=frame_skip,
-                    inference_size=inference_size,
+        if st.session_state.run_detection:
+            if st.session_state.webcam_status:
+                _run_webcam_mode(
+                    enable_threat=st.session_state.enable_threat,
+                    enable_sound=st.session_state.enable_sound,
+                    stability_threshold=float(st.session_state.stability_threshold),
+                    target_fps=int(st.session_state.target_fps),
+                    frame_skip=int(st.session_state.frame_skip),
+                    inference_size=int(st.session_state.inference_size),
                     debug_enabled=debug_mode,
                 )
-            finally:
-                temp_video_path.unlink(missing_ok=True)
-        elif webcam_mode or live_mode:
-            _run_webcam_mode(
-                enable_threat=enable_threat,
-                enable_sound=enable_sound,
-                stability_threshold=stability_threshold,
-                target_fps=target_fps,
-                frame_skip=frame_skip,
-                inference_size=inference_size,
-                debug_enabled=debug_mode,
-            )
+            elif st.session_state.video_path:
+                video_path_obj = Path(st.session_state.video_path)
+                if not video_path_obj.exists():
+                    st.error("Selected video path is missing. Re-upload the file.")
+                else:
+                    _render_uploaded_video(
+                        video_path_obj,
+                        enable_threat=st.session_state.enable_threat,
+                        enable_sound=st.session_state.enable_sound,
+                        stability_threshold=float(st.session_state.stability_threshold),
+                        target_fps=int(st.session_state.target_fps),
+                        frame_skip=int(st.session_state.frame_skip),
+                        inference_size=int(st.session_state.inference_size),
+                        debug_enabled=debug_mode,
+                    )
+            else:
+                st.info("Upload a video or enable live camera, then click Start Detection.")
         else:
-            st.info("Upload a video or enable live mode")
+            st.markdown("<div class='section-title'>Detection Feed</div>", unsafe_allow_html=True)
+            st.info("Detection is idle. Configure controls above and click Start Detection.")
+            st.markdown("<div class='section-title'>SaiG Assistant</div>", unsafe_allow_html=True)
+            st.info("Once detection starts, you can ask SaiG about the latest frame and continue the conversation.")
+            st.markdown("<div class='section-title'>Logs / Analytics</div>", unsafe_allow_html=True)
+            log_col_1, log_col_2 = st.columns(2)
+            with log_col_1:
+                st.markdown("### 📜 Threat History")
+                _render_threat_history_list(st.empty())
+            with log_col_2:
+                st.markdown("### 📊 Object Frequency / Threat Trend")
+                _render_threat_analytics(st.empty())
     except FileNotFoundError as err:
         st.error(f"Missing model or invalid file: {err}")
     except RuntimeError as err:
@@ -1552,9 +2021,11 @@ h2, h3 {
     except Exception as err:
         st.error(f"Unexpected error: {err}")
 
+    st.session_state.detected_objects = st.session_state.latest_detected_objects
+
     st.markdown("---")
     st.markdown(
-        "<div class='footer-note'>Built with YOLOv8, CNN Audio Model, and Streamlit</div>",
+        "<div class='footer-note'>Built with YOLOv8 • Audio AI • Streamlit • SaiG</div>",
         unsafe_allow_html=True,
     )
 
