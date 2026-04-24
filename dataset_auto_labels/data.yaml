@@ -2,12 +2,14 @@ path: dataset_auto_labels
 train: images
 val: images
 
-nc: 10
+nc: 13
 
 names:
   - crab
   - dolphin
+  - fishes
   - human
+  - jellyfish
   - octopus
   - seahorse
   - seal
@@ -15,3 +17,4 @@ names:
   - shark
   - starfish
   - submarine
+  - whale

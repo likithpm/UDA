@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import importlib
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
@@ -13,6 +15,7 @@ import librosa
 import numpy as np
 import torch
 from ultralytics import YOLO
+import yaml
 
 try:
     VideoFileClip = importlib.import_module("moviepy").VideoFileClip
@@ -20,14 +23,14 @@ except Exception:
     VideoFileClip = None
 
 try:
-    from src.config.config import AUDIO_MODELS_DIR, YOLO_WEIGHTS_PATH
+    from src.config.config import AUDIO_MODELS_DIR, AQUATIC_DATA_DIR, AUTO_LABEL_DATA_YAML, YOLO_WEIGHTS_PATH
     from src.models.audio_model import build_audio_model
 except ModuleNotFoundError:
     # Allow direct execution: python src/inference/pipeline.py
     project_root = Path(__file__).resolve().parents[2]
     if str(project_root) not in sys.path:
         sys.path.append(str(project_root))
-    from src.config.config import AUDIO_MODELS_DIR, YOLO_WEIGHTS_PATH
+    from src.config.config import AUDIO_MODELS_DIR, AQUATIC_DATA_DIR, AUTO_LABEL_DATA_YAML, YOLO_WEIGHTS_PATH
     from src.models.audio_model import build_audio_model
 
 SAMPLE_RATE = 22050
@@ -38,11 +41,199 @@ CHUNK_SECONDS = 2
 AUDIO_WEIGHTS_PATH = AUDIO_MODELS_DIR / "audio_model.pth"
 AudioPrediction = Tuple[float, float, str, float]
 AudioTopKPrediction = Tuple[float, float, List[Tuple[str, float]]]
+YOLO_FALLBACK_WEIGHTS = "yolov8n.pt"
+CLASS_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 def _get_device() -> torch.device:
     """Return CUDA when available, otherwise CPU."""
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _model_last_updated(model_path: Path) -> str:
+    """Return a readable timestamp for a local model file."""
+    try:
+        return datetime.fromtimestamp(model_path.stat().st_mtime).isoformat(timespec="seconds")
+    except OSError:
+        return "unknown"
+
+
+def _extract_ordered_names_from_yaml(data_yaml: dict) -> list[str]:
+    """Return ordered class names from YAML names field."""
+    names_field = data_yaml.get("names", [])
+    if isinstance(names_field, list):
+        return [str(name).strip() for name in names_field]
+    if isinstance(names_field, dict):
+        try:
+            return [
+                str(name).strip()
+                for _, name in sorted(
+                    ((int(idx), value) for idx, value in names_field.items()),
+                    key=lambda item: item[0],
+                )
+            ]
+        except (TypeError, ValueError) as err:
+            raise ValueError("Invalid dict format for names in data.yaml.") from err
+    raise ValueError("'names' in data.yaml must be a list or dict.")
+
+
+def _discover_expected_classes(root_dir: Path) -> list[str]:
+    """Discover valid class names from aquatic dataset folders."""
+    if not root_dir.exists() or not root_dir.is_dir():
+        raise FileNotFoundError(f"Aquatic data folder not found: {root_dir}")
+
+    discovered: list[str] = []
+    malformed: list[str] = []
+    seen_lower: dict[str, str] = {}
+    duplicates: dict[str, list[str]] = {}
+
+    for folder in sorted(root_dir.iterdir()):
+        if not folder.is_dir():
+            continue
+
+        class_name = folder.name.strip()
+        if not class_name or not CLASS_NAME_PATTERN.fullmatch(class_name):
+            malformed.append(folder.name)
+            continue
+
+        normalized = class_name.lower()
+        existing = seen_lower.get(normalized)
+        if existing is not None and existing != class_name:
+            duplicates.setdefault(normalized, [existing]).append(class_name)
+            continue
+
+        seen_lower[normalized] = class_name
+        discovered.append(class_name)
+
+    if malformed:
+        raise ValueError(f"Malformed class folder names found: {sorted(set(malformed))}")
+    if duplicates:
+        duplicate_examples = [sorted(set(names)) for names in duplicates.values()]
+        raise ValueError(f"Duplicate class folder names found: {duplicate_examples}")
+
+    sorted_classes = sorted(discovered, key=str.lower)
+    if not sorted_classes:
+        raise ValueError("No class folders found in aquatic dataset directory.")
+    return sorted_classes
+
+
+def _expected_class_names_from_yaml() -> list[str]:
+    """Load and validate class names from dataset_auto_labels/data.yaml."""
+    if not AUTO_LABEL_DATA_YAML.exists():
+        raise FileNotFoundError(f"data.yaml not found for consistency check: {AUTO_LABEL_DATA_YAML}")
+
+    try:
+        data_yaml = yaml.safe_load(AUTO_LABEL_DATA_YAML.read_text(encoding="utf-8"))
+    except yaml.YAMLError as err:
+        raise ValueError(f"Invalid YAML format in {AUTO_LABEL_DATA_YAML}: {err}") from err
+
+    if not isinstance(data_yaml, dict):
+        raise ValueError(f"Expected mapping in {AUTO_LABEL_DATA_YAML}, found: {type(data_yaml).__name__}")
+
+    yaml_names = _extract_ordered_names_from_yaml(data_yaml)
+    yaml_nc = data_yaml.get("nc")
+    if not isinstance(yaml_nc, int):
+        raise ValueError("'nc' in data.yaml must be an integer.")
+    if yaml_nc != len(yaml_names):
+        raise ValueError(
+            "Class count mismatch in data.yaml: "
+            f"nc={yaml_nc}, names_count={len(yaml_names)}"
+        )
+
+    folder_names = _discover_expected_classes(AQUATIC_DATA_DIR)
+    if yaml_names != folder_names:
+        raise ValueError(
+            "Class mismatch between aquatic folders and data.yaml. "
+            f"folders={folder_names}, data.yaml={yaml_names}"
+        )
+
+    return yaml_names
+
+
+def _model_class_names(yolo_model: YOLO) -> list[str]:
+    """Extract ordered class names from loaded YOLO model metadata."""
+    names = yolo_model.names
+    if isinstance(names, list):
+        return [str(name).strip() for name in names]
+    if isinstance(names, dict):
+        return [
+            str(name).strip()
+            for _, name in sorted(names.items(), key=lambda item: int(item[0]))
+        ]
+    raise ValueError(f"Unsupported YOLO names type: {type(names).__name__}")
+
+
+def _validate_inference_class_consistency(
+    yolo_model: YOLO,
+    class_names: list[str],
+    strict: bool,
+) -> None:
+    """Validate class identity/order across folders, data.yaml, and loaded YOLO model."""
+    model_names = _model_class_names(yolo_model)
+
+    print(f"Total classes: {len(class_names)}")
+    print(f"Class names: {class_names}")
+
+    if len(model_names) != len(class_names):
+        message = (
+            "Class count mismatch between loaded YOLO model and data.yaml. "
+            f"model={len(model_names)}, data.yaml={len(class_names)}"
+        )
+        if strict:
+            raise ValueError(message)
+        print(f"Warning: {message}")
+
+    if model_names != class_names:
+        message = (
+            "Class mismatch between loaded YOLO model and data.yaml. "
+            f"model={model_names}, expected={class_names}"
+        )
+        if strict:
+            raise ValueError(message)
+        print(f"Warning: {message}")
+
+
+def _attach_class_names_to_model(yolo_model: YOLO, class_names: list[str]) -> None:
+    """Attach data.yaml class names to model for consistent downstream label mapping."""
+    setattr(yolo_model, "class_names_from_yaml", class_names)
+
+
+def _class_names_for_inference(yolo_model: YOLO) -> list[str]:
+    """Get class names for inference labels (always sourced from data.yaml)."""
+    class_names = getattr(yolo_model, "class_names_from_yaml", None)
+    if isinstance(class_names, list) and class_names:
+        return class_names
+
+    # Safety fallback for externally loaded model objects not created via load_models.
+    class_names = _expected_class_names_from_yaml()
+    _attach_class_names_to_model(yolo_model, class_names)
+    return class_names
+
+
+def _load_yolo_for_inference() -> YOLO:
+    """Load trained YOLO weights, with pretrained fallback when missing."""
+    class_names = _expected_class_names_from_yaml()
+
+    if YOLO_WEIGHTS_PATH.exists():
+        print("Loading existing model...")
+        print(f"YOLO model path: {YOLO_WEIGHTS_PATH}")
+        print(f"YOLO model last updated: {_model_last_updated(YOLO_WEIGHTS_PATH)}")
+        yolo_model = YOLO(str(YOLO_WEIGHTS_PATH))
+        _validate_inference_class_consistency(yolo_model, class_names=class_names, strict=True)
+        _attach_class_names_to_model(yolo_model, class_names)
+        return yolo_model
+
+    print(
+        "Warning: trained YOLO weights not found at "
+        f"{YOLO_WEIGHTS_PATH}. Falling back to pretrained {YOLO_FALLBACK_WEIGHTS}."
+    )
+    yolo_model = YOLO(YOLO_FALLBACK_WEIGHTS)
+    try:
+        _validate_inference_class_consistency(yolo_model, class_names=class_names, strict=False)
+    except Exception as err:
+        print(f"Warning: skipped strict class consistency checks in fallback mode. Details: {err}")
+    _attach_class_names_to_model(yolo_model, class_names)
+    return yolo_model
 
 
 def _pad_or_trim(audio: np.ndarray, target_length: int = TARGET_NUM_SAMPLES) -> np.ndarray:
@@ -129,15 +320,10 @@ def _load_audio_checkpoint(checkpoint_path: Path, device: torch.device) -> Tuple
 
 def load_models() -> Tuple[YOLO, torch.nn.Module, Dict[str, int], torch.device, str]:
     """Load YOLO and audio models along with class mapping and device info."""
-    if not YOLO_WEIGHTS_PATH.exists():
-        raise FileNotFoundError(
-            f"YOLO weights not found: {YOLO_WEIGHTS_PATH}. Train YOLO model first."
-        )
-
     device = _get_device()
     yolo_device = "0" if device.type == "cuda" else "cpu"
 
-    yolo_model = YOLO(str(YOLO_WEIGHTS_PATH))
+    yolo_model = _load_yolo_for_inference()
     audio_model, class_to_idx = _load_audio_checkpoint(AUDIO_WEIGHTS_PATH, device=device)
 
     return yolo_model, audio_model, class_to_idx, device, yolo_device
@@ -240,9 +426,8 @@ def _prediction_for_timestamp(
 
 
 
-def _draw_yolo_detections(frame: np.ndarray, result) -> None:
+def _draw_yolo_detections(frame: np.ndarray, result, class_names: list[str]) -> None:
     """Draw YOLO bounding boxes and labels onto a frame."""
-    names = result.names
     boxes = result.boxes
     if boxes is None:
         return
@@ -250,8 +435,15 @@ def _draw_yolo_detections(frame: np.ndarray, result) -> None:
     for box in boxes:
         x1, y1, x2, y2 = box.xyxy[0].tolist()
         cls_id = int(box.cls[0].item())
+        if cls_id < 0 or cls_id >= len(class_names):
+            print(
+                "Warning: class_id out of range during annotation; skipping detection. "
+                f"class_id={cls_id}, allowed=[0, {len(class_names) - 1}]"
+            )
+            continue
+
         conf = float(box.conf[0].item())
-        label = names.get(cls_id, str(cls_id))
+        label = class_names[cls_id]
 
         p1 = (int(x1), int(y1))
         p2 = (int(x2), int(y2))
@@ -271,9 +463,10 @@ def _draw_yolo_detections(frame: np.ndarray, result) -> None:
 def annotate_frame_with_yolo(frame: np.ndarray, yolo_model: YOLO, yolo_device: str) -> np.ndarray:
     """Run YOLO inference and return the frame with rendered detections."""
     annotated = frame.copy()
+    class_names = _class_names_for_inference(yolo_model)
     results = yolo_model.predict(source=annotated, verbose=False, device=yolo_device)
     if results:
-        _draw_yolo_detections(annotated, results[0])
+        _draw_yolo_detections(annotated, results[0], class_names)
     return annotated
 
 
@@ -282,13 +475,30 @@ def annotate_and_collect_objects(
     yolo_model: YOLO,
     yolo_device: str,
     conf_threshold: float = 0.3,
+    inference_size: int | None = None,
+    copy_frame: bool = True,
 ) -> Tuple[np.ndarray, Set[str], List[Tuple[str, float]]]:
     """Run YOLO inference and return frame, object names, and (label, confidence) list."""
-    annotated = frame.copy()
+    annotated = frame.copy() if copy_frame else frame
+    class_names = _class_names_for_inference(yolo_model)
     detected_objects: Set[str] = set()
     detected_with_confidence: List[Tuple[str, float]] = []
+
+    inference_frame = annotated
+    scale_x = 1.0
+    scale_y = 1.0
+    if inference_size and inference_size > 0:
+        source_height, source_width = annotated.shape[:2]
+        inference_frame = cv2.resize(
+            annotated,
+            (inference_size, inference_size),
+            interpolation=cv2.INTER_AREA,
+        )
+        scale_x = source_width / float(inference_size)
+        scale_y = source_height / float(inference_size)
+
     results = yolo_model.predict(
-        source=annotated,
+        source=inference_frame,
         verbose=False,
         device=yolo_device,
         conf=conf_threshold,
@@ -296,14 +506,43 @@ def annotate_and_collect_objects(
 
     if results:
         result = results[0]
-        _draw_yolo_detections(annotated, result)
 
         boxes = result.boxes
         if boxes is not None:
             for box in boxes:
                 cls_id = int(box.cls[0].item())
+                if cls_id < 0 or cls_id >= len(class_names):
+                    print(
+                        "Warning: class_id out of range during object collection; skipping detection. "
+                        f"class_id={cls_id}, allowed=[0, {len(class_names) - 1}]"
+                    )
+                    continue
+
                 conf = float(box.conf[0].item())
-                label = result.names.get(cls_id, str(cls_id))
+                label = class_names[cls_id]
+
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                if inference_frame is not annotated:
+                    x1 *= scale_x
+                    y1 *= scale_y
+                    x2 *= scale_x
+                    y2 *= scale_y
+
+                frame_h, frame_w = annotated.shape[:2]
+                p1 = (max(0, min(int(x1), frame_w - 1)), max(0, min(int(y1), frame_h - 1)))
+                p2 = (max(0, min(int(x2), frame_w - 1)), max(0, min(int(y2), frame_h - 1)))
+                cv2.rectangle(annotated, p1, p2, (0, 255, 0), 2)
+                cv2.putText(
+                    annotated,
+                    f"{label} {conf:.2f}",
+                    (p1[0], max(0, p1[1] - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
+
                 detected_objects.add(label)
                 detected_with_confidence.append((label, conf))
 
