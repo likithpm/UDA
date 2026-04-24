@@ -1,158 +1,126 @@
-﻿# 🌊 Underwater Multimodal AI Detection System
+﻿# Underwater Multimodal AI Detection System
 
-A real-time AI system that detects underwater objects and analyzes audio using computer vision and deep learning, with an intelligent threat alert system.
-
----
-
-## 🚀 Features
-
-- Real-time object detection using YOLOv8
-- Audio classification using CNN (mel spectrograms)
-- Multimodal detection (video + audio)
-- Confidence-weighted threat detection
-- Temporal stability filtering (anti-flicker alerts)
-- Dynamic threat levels (1-10)
-- Sound alert system (toggle-based)
-- Threat history logging
-- Analytics dashboard (charts)
-- Ocean-themed UI with glassmorphism design
+Real-time underwater monitoring system that combines YOLOv8 object detection, audio classification, threat intelligence, and a conversational assistant (SaiG) inside a single Streamlit dashboard.
 
 ---
 
-## 🧠 System Architecture
+## Overview
 
-Video Input -> YOLO Detection -> Object Labels  
-Audio Input -> CNN Model -> Audio Labels  
-Downstream fusion:  
-Temporal Aggregation -> Confidence Scoring -> Stability Filter  
-Then:  
-Threat Detection -> UI Alerts + Logging
+This project provides:
 
----
-
-## 📂 Dataset
-
-```text
-data/
-├── aquatic_animals_cleaned/   # 10 image classes
-├── waveforms_cleaned/         # underwater audio dataset
-└── test_videos/               # inference/demo videos
-```
-
-Detection classes:
-
-- crab
-- dolphin
-- human
-- octopus
-- seahorse
-- seal
-- seaturtle
-- shark
-- starfish
-- submarine
-
-Notes:
-
-- Images are auto-annotated using YOLO (pseudo-labeling).
-- Bounding boxes are generated automatically.
+- Dynamic underwater object dataset auto-labeling
+- YOLOv8 training with model reuse (skip retraining when weights already exist)
+- Multimodal inference (video + audio)
+- Threat scoring with temporal stability filtering
+- Single-page Streamlit dashboard with live feed, insights, and SaiG chat
+- OpenAI-compatible LLM integration for frame-aware assistant responses
+- Intelligent fallback assistant mode when API keys are not configured
 
 ---
 
-## 🔄 Auto-Annotation Pipeline
+## Key Features
 
-- Uses pretrained YOLO to generate bounding boxes
-- Confidence threshold tuned (about 0.3) for better coverage
-- Iterative self-training supported
+### Data and Labeling
 
-Note:
+- Automatic class discovery from dataset folders (no hardcoded class list)
+- Data validation for malformed or duplicate class folder names
+- Auto-generation of YOLO labels using pretrained YOLOv8
+- Corrupted image handling during annotation
+- Generated YOLO config at `dataset_auto_labels/data.yaml` with `nc` and ordered `names`
+- Strict class consistency checks between folders, labels, and YAML
 
-This replaces manual labeling and improves localization over time.
+### Training
 
----
+- YOLO training pipeline validates dataset before training
+- Existing trained YOLO weights are reused by default
+- Optional force retrain mode available
+- Out-of-range / malformed label entries are sanitized before training
 
-## 🤖 Models
+### Inference
 
-### YOLOv8
+- Inference class names are sourced from `dataset_auto_labels/data.yaml`
+- Strict model-vs-YAML class consistency checks
+- Out-of-range class IDs are skipped safely
+- Performance controls for FPS throttling, frame skipping, and inference size
 
-- Used for object detection
-- Pretrained model: `yolov8n`
-- Fine-tuned on custom underwater dataset
+### Dashboard and UX
 
-### CNN (Audio Model)
+- Single-page dashboard flow:
+	- Header
+	- Controls panel
+	- Input panel (upload / live camera)
+	- Detection feed
+	- Detection insights
+	- SaiG assistant (quick analyze + full chat)
+	- Threat history and analytics
+	- Footer
+- Premium Blue Eclipse theme
+- Responsive layout for desktop/mobile
 
-- Input: Mel spectrogram
-- Output: Audio class prediction
-- Typical validation accuracy: about 85% to 95%
+### SaiG Assistant
 
----
-
-## 🚨 Threat Detection System
-
-- Uses object detection results
-- Applies confidence-weighted scoring
-- Uses a 5-second rolling window
-- Uses stability threshold (user-controlled)
-- Assigns threat levels (1-10)
-
-Examples:
-
-- Shark -> High threat
-- Submarine -> High threat
-- Seahorse -> Low threat
-
----
-
-## 🎨 UI Dashboard
-
-- Ocean-themed design
-- Glassmorphism cards
-- Real-time video feed
-- Alerts with color coding
-- Analytics charts
-- Threat history log
+- One-click quick action: "Ask SaiG About This Frame"
+- Full conversational follow-up chat
+- Real LLM integration via OpenAI-compatible chat completions API
+- Frame image + current detections + conversation context passed to model
+- Intelligent fallback mode when API is unavailable or fails
 
 ---
 
-## 🗂 Project Structure
+## System Flow
+
+Video stream -> YOLO detection -> detected objects -> threat logic -> alerts + logs  
+Audio stream -> CNN audio classifier -> audio class  
+Dashboard fusion -> live cards + history + analytics  
+SaiG -> frame + detections + chat context -> analysis response
+
+---
+
+## Repository Structure
 
 ```text
 src/
-├── app/         # streamlit dashboard
-├── config/      # paths and settings
-├── data/        # conversion and annotation scripts
-├── inference/   # multimodal inference pipeline
-├── models/      # model definitions
-└── training/    # training scripts
+	app/           # Streamlit dashboard
+	config/        # Project paths and settings
+	data/          # Auto-labeling and conversion scripts
+	inference/     # Inference and multimodal pipeline
+	models/        # Model definitions (audio/image)
+	training/      # Training scripts
 
-models/
-├── detection/
-├── audio/
-└── image/
+data/
+	aquatic_animals_cleaned/
+	waveforms_cleaned/
+	test_videos/
 
 dataset_auto_labels/
-├── images/
-├── labels/
-└── data.yaml
+	images/
+	labels/
+	data.yaml
+
+models/
+	detection/
+	audio/
+	image/
 ```
 
 ---
 
-## ⚙️ Installation
+## Setup
 
-1. Create virtual environment:
+1. Create a virtual environment.
 
 ```powershell
 python -m venv .venv
 ```
 
-2. Activate environment (PowerShell):
+2. Activate it in PowerShell.
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+& .\.venv\Scripts\Activate.ps1
 ```
 
-3. Install dependencies:
+3. Install dependencies.
 
 ```powershell
 pip install -r requirements.txt
@@ -160,21 +128,37 @@ pip install -r requirements.txt
 
 ---
 
-## 🏋️ Training
+## Data Preparation
 
-1. Regenerate auto labels:
+Generate pseudo labels and dataset YAML:
 
 ```powershell
 python src/data/auto_annotate.py
 ```
 
-2. Train YOLO model:
+This creates/refreshes:
+
+- `dataset_auto_labels/images`
+- `dataset_auto_labels/labels`
+- `dataset_auto_labels/data.yaml`
+
+---
+
+## Training
+
+Train YOLO (reuses existing model by default):
 
 ```powershell
 python src/training/train_yolo.py
 ```
 
-3. Train audio model:
+Force retraining from code entrypoint:
+
+```powershell
+python -c "from src.training.train_yolo import run_yolo_training; run_yolo_training(force_train=True)"
+```
+
+Train audio model:
 
 ```powershell
 python src/training/train_audio.py
@@ -182,38 +166,56 @@ python src/training/train_audio.py
 
 ---
 
-## ▶️ How to Run
-
-1. Activate environment.
-2. Run Streamlit app:
+## Run Dashboard
 
 ```powershell
 streamlit run src/app/streamlit_app.py
 ```
 
----
+In the app:
 
-## ⚠️ Dataset Note
-
-Dataset is not included due to size.
-
-A downloadable link will be provided:
-
-[Dataset Link - Coming Soon]
+1. Upload a video or enable live camera.
+2. Click Start Detection.
+3. Use controls (core + advanced settings) for performance/threat tuning.
+4. Use "Ask SaiG About This Frame" for instant analysis.
+5. Continue with follow-up chat prompts.
 
 ---
 
-## 📸 Demo
+## SaiG API Configuration
 
-![Demo](assets/demo.png)
+SaiG supports OpenAI-compatible APIs using environment variables:
 
-(Optional: add video later)
+- `OPENAI_API_KEY` or `SAIG_API_KEY`
+- `SAIG_API_BASE_URL` (default: `https://api.openai.com/v1/chat/completions`)
+- `SAIG_MODEL` (default: `gpt-4o-mini`)
+
+PowerShell example:
+
+```powershell
+$env:OPENAI_API_KEY = "your_key_here"
+$env:SAIG_MODEL = "gpt-4o-mini"
+streamlit run src/app/streamlit_app.py
+```
+
+If no API key is set, SaiG automatically uses intelligent fallback mode.
 
 ---
 
-## 🔮 Future Improvements
+## Threat Logic
 
-- Manual annotation for higher accuracy
-- Deployment to cloud
-- Real-time underwater drone integration
-- Advanced analytics
+- Confidence-weighted object aggregation
+- 5-second rolling history window
+- Stability duration threshold to reduce flicker
+- Threat levels (low / medium / high)
+- Optional sound alerts for high stable threats
+
+Default high-risk examples include shark and submarine classes.
+
+---
+
+## Notes
+
+- Keep `dataset_auto_labels/data.yaml` aligned with class folders in `data/aquatic_animals_cleaned`.
+- Inference labels are resolved from YAML class order, not hardcoded names.
+- The dashboard includes startup validation and safe-stop behavior on critical config/model mismatch.
