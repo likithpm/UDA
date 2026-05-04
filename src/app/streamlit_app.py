@@ -15,11 +15,20 @@ from urllib import request as urllib_request
 from pathlib import Path
 from typing import Deque, List, Tuple
 
+from dotenv import load_dotenv
+from google import genai
+
 import cv2
 import pandas as pd
 import streamlit as st
 from ultralytics import YOLO
 import yaml
+from PIL import Image
+
+# Load .env from project root explicitly
+project_root = Path(__file__).resolve().parents[2]
+env_path = project_root / ".env"
+load_dotenv(dotenv_path=env_path)
 
 try:
     from src.inference.pipeline import (
@@ -187,6 +196,54 @@ def _saig_mode_label() -> str:
     return "API" if has_api_key else "Fallback"
 
 
+def get_saig_status() -> str:
+    """Return a user-friendly SaiG mode status string based on Gemini API key."""
+    api_key = os.getenv("GEMINI_API_KEY")
+    if api_key:
+        return "🧠 SaiG Mode: Gemini AI"
+    return "⚠️ SaiG Mode: Fallback"
+
+
+def get_gemini_api_key() -> str | None:
+    """Return normalized Gemini API key or None if missing."""
+    key = os.getenv("GEMINI_API_KEY")
+    if not key:
+        return None
+    return key.strip().strip('"').strip("'")
+
+
+def get_supported_gemini_model() -> str | None:
+    """Pick a supported Gemini model name at runtime."""
+    gemini_api_key = get_gemini_api_key()
+    if not gemini_api_key:
+        return None
+
+    try:
+        client = genai.Client(api_key=gemini_api_key)
+        models = list(client.models.list())
+        names = [model.name for model in models]
+
+        preferred = [
+            "models/gemini-1.5-flash",
+            "models/gemini-1.5-pro",
+            "models/gemini-pro",
+        ]
+        for candidate in preferred:
+            if candidate in names:
+                return candidate
+
+        for model in models:
+            if (
+                hasattr(model, "supported_generation_methods")
+                and "generateContent" in model.supported_generation_methods
+            ):
+                return model.name
+    except Exception as e:
+        st.warning(f"Model discovery failed: {str(e)}")
+
+    return None
+
+
 def _render_system_status_panel(startup_status: dict | None = None) -> None:
     """Render top-level startup and system status cards."""
     startup_status = startup_status or {}
@@ -339,95 +396,85 @@ def _simulated_saig_response(
     return f"{scene_description} {reasoning}{memory_context}{follow_up_context}"
 
 
-def query_saig(
-    user_prompt: str,
-    image_base64: str,
-    detected_objects: List[str],
-    chat_history: List[dict],
-) -> str:
-    """Query OpenAI-compatible API with conversation + frame context, with fallback mode."""
-    if not image_base64:
-        return "No visual data available yet"
+def query_saig(frame: object, user_prompt: str, detected_objects: List[str]) -> str:
+    """Query Gemini API with image frame and context for SaiG reasoning.
 
-    fallback_response = _simulated_saig_response(user_prompt, detected_objects, chat_history)
+    Args:
+        frame: numpy array or PIL Image from video/stream
+        user_prompt: user's query or question
+        detected_objects: list of detected object names
 
-    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("SAIG_API_KEY")
-    if not api_key:
-        return fallback_response
-
-    endpoint = os.getenv("SAIG_API_BASE_URL", "https://api.openai.com/v1/chat/completions")
-    model_name = os.getenv("SAIG_MODEL", "gpt-4o-mini")
-    detected_text = ", ".join(sorted(set(detected_objects))) if detected_objects else "none"
-    prompt = (
-        "Analyze this underwater frame and respond as SaiG.\n\n"
-        f"Detected objects: {detected_text}\n"
-        f"User request: {user_prompt}\n\n"
-        "Explain scene interpretation, potential threat level, and recommended next monitoring action."
-    )
-
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are SaiG, an intelligent underwater surveillance AI assistant. "
-                "Analyze underwater scenes, marine life, submarines, threats, and explain clearly. "
-                "Use the image and detected objects as context."
-            ),
-        }
-    ]
-    for message in chat_history[-8:]:
-        role = str(message.get("role", "")).strip()
-        content = str(message.get("content", "")).strip()
-        if role in {"user", "assistant"} and content:
-            messages.append({"role": role, "content": content})
-
-    messages.append(
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
-                },
-            ],
-        }
-    )
-
-    payload = {
-        "model": model_name,
-        "messages": messages,
-        "temperature": 0.2,
-        "max_tokens": 700,
-    }
-
-    request_body = json.dumps(payload).encode("utf-8")
-    http_request = urllib_request.Request(
-        endpoint,
-        data=request_body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
+    Returns:
+        Response text from Gemini or error message
+    """
+    # Validation: Check if frame is available
+    if frame is None:
+        return "No visual data available yet. Please start video."
 
     try:
-        with urllib_request.urlopen(http_request, timeout=25) as response:
-            response_payload = json.loads(response.read().decode("utf-8"))
-        content = response_payload["choices"][0]["message"]["content"]
-        if isinstance(content, list):
-            text_parts = []
-            for part in content:
-                if isinstance(part, dict) and "text" in part:
-                    text_parts.append(str(part["text"]))
-            llm_text = "\n".join(text_parts).strip()
+        # Convert numpy frame to PIL Image
+        if not isinstance(frame, Image.Image):
+            image = Image.fromarray(frame)
         else:
-            llm_text = str(content).strip()
+            image = frame
 
-        return llm_text or fallback_response
-    except (urllib_error.URLError, urllib_error.HTTPError, TimeoutError, KeyError, ValueError):
-        return fallback_response
+        # Normalize detected objects for clearer prompts
+        if not detected_objects:
+            detected_objects = ["No clear objects detected"]
+
+        detected_text = ", ".join(sorted(set(detected_objects)))
+
+        # Improved, production-ready Gemini prompt
+        prompt = f"""You are SaiG, an advanced underwater surveillance AI system.
+
+Detected objects: {detected_text}
+
+Analyze the given image and respond in the following structured format:
+
+1. Scene Description:
+Explain what is happening in the environment.
+
+2. Detected Objects:
+List and describe visible objects.
+
+3. Threat Level:
+Classify as Low, Medium, or High.
+
+4. Reasoning:
+Explain why the threat level was assigned.
+
+Be clear, concise, and informative.
+User query: {user_prompt}
+"""
+
+        # Basic debug logging
+        print("Gemini prompt sent successfully")
+        print("Detected objects:", detected_objects)
+
+        # Call Gemini with image and prompt
+        model_name = "gemini-2.5-flash"
+        st.write("Using Gemini model:", model_name)
+
+        gemini_api_key = get_gemini_api_key()
+        if not gemini_api_key:
+            return "Missing GEMINI_API_KEY in .env"
+
+        client = genai.Client(api_key=gemini_api_key)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[prompt, image],
+        )
+
+        resp_text = response.text if response and response.text else "No response generated. Try again."
+
+        # Ensure threat clarity in responses
+        if "Threat Level" not in resp_text:
+            resp_text = resp_text + "\n\nThreat Level: Unable to determine clearly."
+
+        return resp_text
+
+    except Exception as e:
+        return f"Gemini error: {str(e)}"
 
 
 def _render_saig_chat_history(container, chat_history: List[dict]) -> None:
@@ -485,41 +532,73 @@ def _handle_saig_chat_send(
     warning_placeholder,
     debug_enabled: bool = False,
 ) -> None:
-    """Handle one chat send event and append assistant response to session history."""
+    """Handle chat send event with conversation context and Gemini reasoning."""
     if not send_requested:
         return
 
-    user_prompt = prompt_text.strip()
-    if not user_prompt:
+    user_input = prompt_text.strip()
+    if not user_input:
         warning_placeholder.warning("Please enter a question before sending.")
         return
 
-    _append_chat_message("user", user_prompt)
-
+    # Safety check: no frame
     if latest_frame is None:
-        _append_chat_message("assistant", "No visual data available yet")
+        _append_chat_message("user", user_input)
+        _append_chat_message("assistant", "No visual data available yet.")
         return
 
-    _debug_log(debug_enabled, "SaiG query triggered")
-    with st.spinner("Analyzing..."):
+    # Ensure detected_objects is always a list
+    if not isinstance(detected_objects, list):
+        detected_objects = []
+
+    # Get chat history with last 5 messages for context
+    chat_history = st.session_state.get("chat_history", [])
+    context_messages = chat_history[-5:]
+
+    # Build history text for prompt
+    history_text = "\n".join([
+        f"{msg['role'].capitalize()}: {msg['content'][:100]}..." if len(msg['content']) > 100 
+        else f"{msg['role'].capitalize()}: {msg['content']}"
+        for msg in context_messages
+    ])
+
+    # Build context-aware prompt
+    detected_text = ", ".join(sorted(set(detected_objects))) if detected_objects else "none"
+    prompt = f"""You are SaiG, an intelligent underwater monitoring assistant.
+
+Previous conversation:
+{history_text}
+
+Detected objects: {detected_text}
+
+User question: {user_input}
+
+Answer clearly, reference previous context if relevant, and provide detailed insights about the scene."""
+
+    _append_chat_message("user", user_input)
+
+    _debug_log(debug_enabled, "SaiG conversational query triggered")
+    with st.spinner("SaiG is thinking..."):
         try:
-            encoded_image = encode_frame_to_base64(latest_frame)
             response = query_saig(
-                user_prompt=user_prompt,
-                image_base64=encoded_image,
+                frame=latest_frame,
+                user_prompt=prompt,
                 detected_objects=detected_objects,
-                chat_history=st.session_state.chat_history[:-1],
             )
             _append_chat_message("assistant", response)
+            
+            # Update chat history in session state (keep last 15 messages)
+            updated_history = st.session_state.get("chat_history", [])
+            st.session_state.chat_history = updated_history[-15:]
+            
         except Exception as err:
             fallback = _simulated_saig_response(
-                user_prompt=user_prompt,
+                user_prompt=user_input,
                 detected_objects=detected_objects,
                 chat_history=st.session_state.chat_history,
             )
             _append_chat_message("assistant", fallback)
-            warning_placeholder.warning(f"SaiG API failed; using fallback analysis. Details: {err}")
-
+            warning_placeholder.warning(f"SaiG API failed; using fallback response. Details: {err}")
 
 def _handle_saig_quick_action(
     quick_requested: bool,
@@ -533,24 +612,23 @@ def _handle_saig_quick_action(
         return
 
     if latest_frame is None:
-        st.session_state.saig_quick_answer = "No visual data available yet"
+        st.session_state.saig_quick_answer = "No frame available. Start video first."
         return
 
-    quick_prompt = (
-        "Provide an immediate scene analysis with detected objects, possible risks, "
-        "and the most important monitoring recommendation."
-    )
+    # Ensure detected_objects is always a list, fallback to empty if not
+    if not isinstance(detected_objects, list):
+        detected_objects = []
+
+    quick_prompt = "Analyze this underwater scene and assess threat level"
     _append_chat_message("user", "Analyze the current frame.")
 
     _debug_log(debug_enabled, "SaiG quick frame analysis triggered")
-    with st.spinner("Analyzing frame with SaiG..."):
+    with st.spinner("Analyzing scene..."):
         try:
-            encoded_image = encode_frame_to_base64(latest_frame)
             response = query_saig(
+                frame=latest_frame,
                 user_prompt=quick_prompt,
-                image_base64=encoded_image,
                 detected_objects=detected_objects,
-                chat_history=st.session_state.chat_history,
             )
             st.session_state.saig_quick_answer = response
             _append_chat_message("assistant", response)
@@ -562,7 +640,7 @@ def _handle_saig_quick_action(
             )
             st.session_state.saig_quick_answer = fallback
             _append_chat_message("assistant", fallback)
-            warning_placeholder.warning(f"SaiG quick analysis failed; using fallback. Details: {err}")
+            warning_placeholder.warning(f"SaiG analysis failed; using fallback. Details: {err}")
 
 
 def _render_signal_card(
@@ -836,6 +914,11 @@ def _render_uploaded_video(
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("<div class='section-title'>SaiG Assistant</div>", unsafe_allow_html=True)
+    status = get_saig_status()
+    if "Gemini" in status:
+        st.success(status)
+    else:
+        st.warning(status)
     quick_action_col_1, quick_action_col_2, quick_action_col_3 = st.columns([2, 3, 2])
     with quick_action_col_1:
         st.empty()
@@ -1063,7 +1146,7 @@ def _render_uploaded_video(
                 _handle_saig_quick_action(
                     quick_requested=True,
                     latest_frame=latest_frame,
-                    detected_objects=st.session_state.latest_detected_objects,
+                    detected_objects=st.session_state.get("latest_detected_objects", []),
                     warning_placeholder=warning_placeholder,
                     debug_enabled=debug_enabled,
                 )
@@ -1140,6 +1223,11 @@ def _run_webcam_mode(
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("<div class='section-title'>SaiG Assistant</div>", unsafe_allow_html=True)
+    status = get_saig_status()
+    if "Gemini" in status:
+        st.success(status)
+    else:
+        st.warning(status)
     quick_action_col_1, quick_action_col_2, quick_action_col_3 = st.columns([2, 3, 2])
     with quick_action_col_1:
         st.empty()
@@ -1341,7 +1429,7 @@ def _run_webcam_mode(
                 _handle_saig_quick_action(
                     quick_requested=True,
                     latest_frame=latest_frame,
-                    detected_objects=st.session_state.latest_detected_objects,
+                    detected_objects=st.session_state.get("latest_detected_objects", []),
                     warning_placeholder=warning_placeholder,
                     debug_enabled=debug_enabled,
                 )
@@ -1377,6 +1465,39 @@ def _run_webcam_mode(
 def main() -> None:
     """Render Streamlit UI and route to uploaded-video or webcam mode."""
     st.set_page_config(page_title="Underwater AI Detection System", layout="wide")
+
+    # TODO: remove debug after verification
+    raw_key = os.getenv("GEMINI_API_KEY")
+    masked = (raw_key[:6] + "..." + raw_key[-4:]) if raw_key else None
+    st.write("Gemini key loaded:", bool(raw_key))
+    st.write("Gemini key (masked):", masked)
+
+    gemini_api_key = get_gemini_api_key()
+    if not gemini_api_key:
+        st.error("Missing GEMINI_API_KEY in .env")
+        return
+
+    client = None
+    try:
+        client = genai.Client(api_key=gemini_api_key)
+    except Exception as e:
+        st.warning(f"Gemini config failed: {str(e)}")
+        
+
+    # TODO: remove debug after verification
+    if st.button("Test Gemini API"):
+        if client is None:
+            st.error("Gemini client not configured.")
+        else:
+            try:
+                r = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=["Say hello"],
+                )
+                st.success("Gemini working")
+                st.write(r.text)
+            except Exception as e:
+                st.error(f"Gemini error: {str(e)}")
 
     st.markdown(
         """
@@ -2005,7 +2126,11 @@ section[data-testid="stSidebar"] .stButton > button:hover {
             st.markdown("<div class='section-title'>Detection Feed</div>", unsafe_allow_html=True)
             st.info("Detection is idle. Configure controls above and click Start Detection.")
             st.markdown("<div class='section-title'>SaiG Assistant</div>", unsafe_allow_html=True)
-            st.info("Once detection starts, you can ask SaiG about the latest frame and continue the conversation.")
+            status = get_saig_status()
+            if "Gemini" in status:
+                st.success(status)
+            else:
+                st.info("Once detection starts, you can ask SaiG about the latest frame and continue the conversation.")
             st.markdown("<div class='section-title'>Logs / Analytics</div>", unsafe_allow_html=True)
             log_col_1, log_col_2 = st.columns(2)
             with log_col_1:

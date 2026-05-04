@@ -8,3 +8,5 @@ numpy
 pandas
 matplotlib
 scikit-learn
+python-dotenv
+google-generativeai
