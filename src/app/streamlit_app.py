@@ -447,13 +447,8 @@ Be clear, concise, and informative.
 User query: {user_prompt}
 """
 
-        # Basic debug logging
-        print("Gemini prompt sent successfully")
-        print("Detected objects:", detected_objects)
-
         # Call Gemini with image and prompt
         model_name = "gemini-2.5-flash"
-        st.write("Using Gemini model:", model_name)
 
         gemini_api_key = get_gemini_api_key()
         if not gemini_api_key:
@@ -473,8 +468,8 @@ User query: {user_prompt}
 
         return resp_text
 
-    except Exception as e:
-        return f"Gemini error: {str(e)}"
+    except Exception:
+        return "SaiG AI service temporarily unavailable. Please try again."
 
 
 def _render_saig_chat_history(container, chat_history: List[dict]) -> None:
@@ -685,20 +680,20 @@ def _render_threat(level: int, label: str) -> str:
     if level >= 7:
         return (
             "<div class='glass-card card threat-card threat-high pulse-high'>"
-            "<div class='card-title'>Threat Panel</div>"
+            "<div class='card-title'>Threat Level</div>"
             f"<div class='card-value'><b>🚨 HIGH THREAT: {label.upper()} (Level {level})</b></div>"
             "</div>"
         )
     if level >= 4:
         return (
             "<div class='glass-card card threat-card threat-medium'>"
-            "<div class='card-title'>Threat Panel</div>"
+            "<div class='card-title'>Threat Level</div>"
             f"<div class='card-value'>⚠️ MEDIUM THREAT: {label} (Level {level})</div>"
             "</div>"
         )
     return (
         "<div class='glass-card card threat-card threat-low'>"
-        "<div class='card-title'>Threat Panel</div>"
+        "<div class='card-title'>Threat Level</div>"
         f"<div class='card-value'>🟢 LOW THREAT: {label} (Level {level})</div>"
         "</div>"
     )
@@ -745,7 +740,7 @@ def _render_threat_alert(
     if not dominant_object:
         _render_signal_card(
             alert_placeholder,
-            "Threat Panel",
+            "Threat Level",
             "🟢 Threat monitor: No recent objects in 5-second window",
             tone="low",
         )
@@ -756,7 +751,7 @@ def _render_threat_alert(
     if stable_duration < stability_threshold:
         _render_signal_card(
             alert_placeholder,
-            "Threat Panel",
+            "Threat Level",
             "Monitoring environment...",
             tone="neutral",
         )
@@ -890,7 +885,7 @@ def _render_uploaded_video(
     debug_enabled: bool,
 ) -> None:
     """Run full multimodal pipeline for an uploaded video file."""
-    st.markdown("<div class='section-title'>Detection</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>Metrics</div>", unsafe_allow_html=True)
     top_col_1, top_col_2, top_col_3, top_col_4 = st.columns(4)
     with top_col_1:
         audio_placeholder = st.empty()
@@ -904,52 +899,57 @@ def _render_uploaded_video(
     blink_placeholder = st.empty()
     sound_placeholder = st.empty()
 
-    st.markdown("<div class='section-title'>Detection Feed</div>", unsafe_allow_html=True)
-    st.markdown("<div class='video-shell'>", unsafe_allow_html=True)
-    with st.container():
-        st.markdown("<div class='video-title'>🎥 Live Detection Feed</div>", unsafe_allow_html=True)
-        video_label_placeholder = st.empty()
-        frame_placeholder = st.empty()
-        progress_bar = st.progress(0.0)
-    st.markdown("</div>", unsafe_allow_html=True)
+    left_panel, right_panel = st.columns([7, 3])
+    with left_panel:
+        st.markdown("<div class='section-title'>Detection Feed</div>", unsafe_allow_html=True)
+        st.markdown("<div class='video-shell'>", unsafe_allow_html=True)
+        with st.container():
+            st.markdown("<div class='video-title'>🎥 Live Detection Feed</div>", unsafe_allow_html=True)
+            video_label_placeholder = st.empty()
+            frame_placeholder = st.empty()
+            progress_bar = st.progress(0.0)
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("<div class='section-title'>SaiG Assistant</div>", unsafe_allow_html=True)
-    status = get_saig_status()
-    if "Gemini" in status:
-        st.success(status)
-    else:
-        st.warning(status)
-    quick_action_col_1, quick_action_col_2, quick_action_col_3 = st.columns([2, 3, 2])
-    with quick_action_col_1:
-        st.empty()
-    with quick_action_col_2:
+    with right_panel:
+        st.markdown("<div class='glass-card card'>", unsafe_allow_html=True)
+        st.markdown("<div class='card-title'>Controls</div>", unsafe_allow_html=True)
+        status = get_saig_status()
+        if "Gemini" in status:
+            st.success(status)
+        else:
+            st.warning(status)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown("<div class='glass-card card'>", unsafe_allow_html=True)
+        st.markdown("<div class='card-title'>Ask SaiG</div>", unsafe_allow_html=True)
         quick_saig = st.button("🧠 Ask SaiG About This Frame", key="upload_quick_saig", type="primary")
-    with quick_action_col_3:
-        st.empty()
+        quick_answer_placeholder = st.empty()
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    quick_answer_placeholder = st.empty()
+        st.markdown("<div class='glass-card card'>", unsafe_allow_html=True)
+        st.markdown("<div class='card-title'>SaiG Chat</div>", unsafe_allow_html=True)
+        chat_history_placeholder = st.empty()
+        _render_saig_chat_history(chat_history_placeholder, st.session_state.chat_history)
 
-    st.markdown("### 💬 Continue Conversation with SaiG")
-    chat_history_placeholder = st.empty()
-    _render_saig_chat_history(chat_history_placeholder, st.session_state.chat_history)
+        chat_col_1, chat_col_2 = st.columns([4, 1])
+        with chat_col_1:
+            chat_prompt = st.text_input(
+                "Ask SaiG about this scene...",
+                key="saig_chat_input_upload",
+                label_visibility="collapsed",
+                placeholder="Ask SaiG about this scene...",
+            )
+        with chat_col_2:
+            send_chat = st.button("Send", key="saig_chat_send_upload", type="primary")
 
-    chat_col_1, chat_col_2, chat_col_3 = st.columns([6, 1, 1])
-    with chat_col_1:
-        chat_prompt = st.text_input(
-            "Ask SaiG about this scene...",
-            key="saig_chat_input_upload",
-            label_visibility="collapsed",
-            placeholder="Ask SaiG about this scene...",
-        )
-    with chat_col_2:
-        send_chat = st.button("Send", key="saig_chat_send_upload", type="primary")
-    with chat_col_3:
         clear_chat = st.button("Clear Chat", key="saig_chat_clear_upload", type="secondary")
 
-    if clear_chat:
-        st.session_state.chat_history = []
-        st.session_state.saig_quick_answer = ""
-        st.session_state.saig_chat_input_upload = ""
+        if clear_chat:
+            st.session_state.chat_history = []
+            st.session_state.saig_quick_answer = ""
+            st.session_state.saig_chat_input_upload = ""
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
     warning_placeholder = st.empty()
     if st.session_state.get("saig_quick_answer"):
@@ -1044,7 +1044,7 @@ def _render_uploaded_video(
             smoothed_audio = Counter(audio_history).most_common(1)[0][0]
             _render_signal_card(
                 audio_placeholder,
-                "Audio Detection",
+                "Audio Status",
                 f"{smoothed_audio}",
                 tone="neutral",
                 icon="🔊",
@@ -1200,7 +1200,7 @@ def _run_webcam_mode(
     debug_enabled: bool,
 ) -> None:
     """Run webcam detection stream using YOLO only."""
-    st.markdown("<div class='section-title'>Detection</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>Metrics</div>", unsafe_allow_html=True)
     top_col_1, top_col_2, top_col_3, top_col_4 = st.columns(4)
     with top_col_1:
         audio_placeholder = st.empty()
@@ -1214,51 +1214,56 @@ def _run_webcam_mode(
     blink_placeholder = st.empty()
     sound_placeholder = st.empty()
 
-    st.markdown("<div class='section-title'>Detection Feed</div>", unsafe_allow_html=True)
-    st.markdown("<div class='video-shell'>", unsafe_allow_html=True)
-    with st.container():
-        st.markdown("<div class='video-title'>🎥 Live Detection Feed</div>", unsafe_allow_html=True)
-        video_label_placeholder = st.empty()
-        frame_placeholder = st.empty()
-    st.markdown("</div>", unsafe_allow_html=True)
+    left_panel, right_panel = st.columns([7, 3])
+    with left_panel:
+        st.markdown("<div class='section-title'>Detection Feed</div>", unsafe_allow_html=True)
+        st.markdown("<div class='video-shell'>", unsafe_allow_html=True)
+        with st.container():
+            st.markdown("<div class='video-title'>🎥 Live Detection Feed</div>", unsafe_allow_html=True)
+            video_label_placeholder = st.empty()
+            frame_placeholder = st.empty()
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("<div class='section-title'>SaiG Assistant</div>", unsafe_allow_html=True)
-    status = get_saig_status()
-    if "Gemini" in status:
-        st.success(status)
-    else:
-        st.warning(status)
-    quick_action_col_1, quick_action_col_2, quick_action_col_3 = st.columns([2, 3, 2])
-    with quick_action_col_1:
-        st.empty()
-    with quick_action_col_2:
+    with right_panel:
+        st.markdown("<div class='glass-card card'>", unsafe_allow_html=True)
+        st.markdown("<div class='card-title'>Controls</div>", unsafe_allow_html=True)
+        status = get_saig_status()
+        if "Gemini" in status:
+            st.success(status)
+        else:
+            st.warning(status)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown("<div class='glass-card card'>", unsafe_allow_html=True)
+        st.markdown("<div class='card-title'>Ask SaiG</div>", unsafe_allow_html=True)
         quick_saig = st.button("🧠 Ask SaiG About This Frame", key="webcam_quick_saig", type="primary")
-    with quick_action_col_3:
-        st.empty()
+        quick_answer_placeholder = st.empty()
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    quick_answer_placeholder = st.empty()
+        st.markdown("<div class='glass-card card'>", unsafe_allow_html=True)
+        st.markdown("<div class='card-title'>SaiG Chat</div>", unsafe_allow_html=True)
+        chat_history_placeholder = st.empty()
+        _render_saig_chat_history(chat_history_placeholder, st.session_state.chat_history)
 
-    st.markdown("### 💬 Continue Conversation with SaiG")
-    chat_history_placeholder = st.empty()
-    _render_saig_chat_history(chat_history_placeholder, st.session_state.chat_history)
+        chat_col_1, chat_col_2 = st.columns([4, 1])
+        with chat_col_1:
+            chat_prompt = st.text_input(
+                "Ask SaiG about this scene...",
+                key="saig_chat_input_webcam",
+                label_visibility="collapsed",
+                placeholder="Ask SaiG about this scene...",
+            )
+        with chat_col_2:
+            send_chat = st.button("Send", key="saig_chat_send_webcam", type="primary")
 
-    chat_col_1, chat_col_2, chat_col_3 = st.columns([6, 1, 1])
-    with chat_col_1:
-        chat_prompt = st.text_input(
-            "Ask SaiG about this scene...",
-            key="saig_chat_input_webcam",
-            label_visibility="collapsed",
-            placeholder="Ask SaiG about this scene...",
-        )
-    with chat_col_2:
-        send_chat = st.button("Send", key="saig_chat_send_webcam", type="primary")
-    with chat_col_3:
         clear_chat = st.button("Clear Chat", key="saig_chat_clear_webcam", type="secondary")
 
-    if clear_chat:
-        st.session_state.chat_history = []
-        st.session_state.saig_quick_answer = ""
-        st.session_state.saig_chat_input_webcam = ""
+        if clear_chat:
+            st.session_state.chat_history = []
+            st.session_state.saig_quick_answer = ""
+            st.session_state.saig_chat_input_webcam = ""
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
     warning_placeholder = st.empty()
     if st.session_state.get("saig_quick_answer"):
@@ -1398,7 +1403,7 @@ def _run_webcam_mode(
 
             _render_signal_card(
                 audio_placeholder,
-                "Audio Detection",
+                "Audio Status",
                 "Webcam mode",
                 tone="neutral",
                 icon="🔊",
@@ -1466,12 +1471,6 @@ def main() -> None:
     """Render Streamlit UI and route to uploaded-video or webcam mode."""
     st.set_page_config(page_title="Underwater AI Detection System", layout="wide")
 
-    # TODO: remove debug after verification
-    raw_key = os.getenv("GEMINI_API_KEY")
-    masked = (raw_key[:6] + "..." + raw_key[-4:]) if raw_key else None
-    st.write("Gemini key loaded:", bool(raw_key))
-    st.write("Gemini key (masked):", masked)
-
     gemini_api_key = get_gemini_api_key()
     if not gemini_api_key:
         st.error("Missing GEMINI_API_KEY in .env")
@@ -1484,66 +1483,51 @@ def main() -> None:
         st.warning(f"Gemini config failed: {str(e)}")
         
 
-    # TODO: remove debug after verification
-    if st.button("Test Gemini API"):
-        if client is None:
-            st.error("Gemini client not configured.")
-        else:
-            try:
-                r = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=["Say hello"],
-                )
-                st.success("Gemini working")
-                st.write(r.text)
-            except Exception as e:
-                st.error(f"Gemini error: {str(e)}")
-
     st.markdown(
         """
 <style>
 .stApp {
-    background: #F5F6FA;
-    color: #4A4A4A;
+    background: #0E1117;
+    color: #FFFFFF;
 }
 
 :root {
-    --bg: #F5F6FA;
-    --surface: #FFFFFF;
-    --surface-soft: #EEF0F8;
-    --border: #E6E8F0;
-    --text-primary: #4A4A4A;
-    --text-muted: #707090;
-    --accent: #0F0E47;
-    --accent-2: #272757;
-    --accent-3: #505081;
-    --accent-4: #8686AC;
-    --success: #5cb85c;
-    --warning: #f0ad4e;
-    --danger: #d9534f;
+    --bg: #0E1117;
+    --surface: #1C1F26;
+    --surface-soft: #1C1F26;
+    --border: #2A2F3A;
+    --text-primary: #FFFFFF;
+    --text-muted: #AAAAAA;
+    --accent: #4FC3F7;
+    --accent-2: #4FC3F7;
+    --accent-3: #4FC3F7;
+    --accent-4: #4FC3F7;
+    --success: #4FC3F7;
+    --warning: #4FC3F7;
+    --danger: #4FC3F7;
     --space-1: 8px;
-    --space-2: 16px;
-    --space-3: 24px;
-    --space-4: 32px;
+    --space-2: 20px;
+    --space-3: 28px;
+    --space-4: 36px;
 }
 
 h1 {
-    color: #0F0E47;
-    font-size: 2.55rem;
+    color: #FFFFFF;
+    font-size: 2.2rem;
     font-weight: 800;
     line-height: 1.15;
     margin-bottom: var(--space-1);
 }
 
 h2, h3 {
-    color: #272757;
+    color: #FFFFFF;
     font-weight: 700;
 }
 
 .main .block-container {
     padding-top: var(--space-3);
     padding-bottom: var(--space-4);
-    max-width: 1320px;
+    max-width: 1200px;
     padding-left: var(--space-3);
     padding-right: var(--space-3);
 }
@@ -1551,43 +1535,37 @@ h2, h3 {
 .dashboard-header {
     text-align: center;
     margin-top: var(--space-1);
-    margin-bottom: var(--space-3);
-    background: linear-gradient(145deg, #ffffff 0%, #f8f9fe 100%);
+    margin-bottom: 30px;
+    background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 18px;
+    border-radius: 12px;
     padding: var(--space-3) var(--space-2);
 }
 
 .dashboard-subtitle {
-    color: #505081;
-    font-size: 1rem;
+    color: var(--text-muted);
+    font-size: 0.98rem;
     margin-top: var(--space-1);
     font-weight: 500;
     line-height: 1.45;
 }
 
 .section-title {
-    color: #272757;
+    color: #FFFFFF;
     font-weight: 600;
     margin-top: var(--space-3);
-    margin-bottom: var(--space-2);
-    font-size: 1.08rem;
+    margin-bottom: 24px;
+    font-size: 1.02rem;
 }
 
 .card,
 .glass-card {
     background: var(--surface);
     border-radius: 12px;
-    padding: 14px var(--space-2);
-    margin-bottom: var(--space-2);
+    padding: 16px;
+    margin-bottom: 24px;
     border: 1px solid var(--border);
-    box-shadow: 0 4px 14px rgba(15, 14, 71, 0.08);
-}
-
-.card:hover {
-    border-color: #8686AC;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
-    box-shadow: 0 8px 18px rgba(15, 14, 71, 0.12);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .signal-card {
@@ -1598,28 +1576,12 @@ h2, h3 {
     justify-content: center;
     text-align: center;
     gap: var(--space-1);
-    border-top: 3px solid #0F0E47;
+    border-top: 3px solid var(--accent);
 }
 
 .card-icon {
     font-size: 1.22rem;
     line-height: 1;
-}
-
-[data-testid="stHorizontalBlock"] > [data-testid="column"]:nth-child(1) .signal-card {
-    border-top-color: #8686AC;
-}
-
-[data-testid="stHorizontalBlock"] > [data-testid="column"]:nth-child(2) .signal-card {
-    border-top-color: #505081;
-}
-
-[data-testid="stHorizontalBlock"] > [data-testid="column"]:nth-child(3) .signal-card {
-    border-top-color: #272757;
-}
-
-[data-testid="stHorizontalBlock"] > [data-testid="column"]:nth-child(4) .signal-card {
-    border-top-color: #0F0E47;
 }
 
 .signal-card .card-title,
@@ -1634,7 +1596,7 @@ h2, h3 {
 
 .card-value {
     margin-top: 0;
-    color: #272757;
+    color: var(--text-primary);
     font-size: 1.56rem;
     font-weight: 700;
     line-height: 1.2;
@@ -1661,7 +1623,7 @@ h2, h3 {
     text-align: center;
     font-weight: 700;
     margin-bottom: var(--space-2);
-    color: #272757;
+    color: var(--text-primary);
 }
 
 .video-label-danger {
@@ -1671,9 +1633,9 @@ h2, h3 {
 button[kind],
 .stButton > button {
     border-radius: 10px;
-    border: 1px solid #0F0E47;
-    background: #0F0E47;
-    color: #ffffff;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: #0E1117;
     min-height: 40px;
     height: 40px;
     padding: 0.4rem 0.95rem;
@@ -1682,21 +1644,21 @@ button[kind],
 }
 
 .stButton > button[kind="secondary"] {
-    background: #8686AC;
-    border-color: #8686AC;
-    color: #FFFFFF;
+    background: transparent;
+    border-color: var(--accent);
+    color: var(--accent);
 }
 
 button[kind]:hover,
 .stButton > button:hover {
-    background: #272757;
-    border-color: #272757;
+    background: #2B2F3A;
+    border-color: var(--accent);
 }
 
 .stButton > button[kind="secondary"]:hover {
-    background: #505081;
-    border-color: #505081;
-    color: #FFFFFF;
+    background: #2B2F3A;
+    border-color: var(--accent);
+    color: var(--accent);
 }
 
 [data-baseweb="slider"],
@@ -1718,8 +1680,8 @@ label, .stSelectbox label, .stSlider label {
     height: 40px;
     border-radius: 10px;
     border: 1px solid var(--border);
-    background: #FFFFFF;
-    color: #272757;
+    background: var(--surface);
+    color: var(--text-primary);
 }
 
 [data-testid="stFileUploaderDropzone"] {
@@ -1735,7 +1697,7 @@ label, .stSelectbox label, .stSlider label {
 }
 
 .alert-blink {
-    color: var(--danger);
+    color: var(--accent);
     font-weight: 700;
     text-align: center;
     margin-bottom: 0.35rem;
@@ -1747,7 +1709,7 @@ label, .stSelectbox label, .stSlider label {
 
 .saig-chat-shell {
     padding: 10px 8px;
-    background: #FFFFFF;
+    background: var(--surface);
 }
 
 .saig-chat-history {
@@ -1758,7 +1720,7 @@ label, .stSelectbox label, .stSlider label {
 
 .chat-row {
     display: flex;
-    margin-bottom: 10px;
+    margin-bottom: 14px;
 }
 
 .chat-row-user {
@@ -1770,24 +1732,24 @@ label, .stSelectbox label, .stSlider label {
 }
 
 .chat-bubble {
-    max-width: 82%;
+    max-width: 80%;
     border-radius: 14px;
     padding: 10px 14px;
     line-height: 1.42;
-    font-size: 0.95rem;
+    font-size: 1rem;
     border: 1px solid transparent;
 }
 
 .chat-bubble-user {
-    background: #0F0E47;
-    border-color: #0F0E47;
-    color: #ffffff;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #0E1117;
 }
 
 .chat-bubble-assistant {
-    background: #E8EAF8;
-    border-color: #DDE1F4;
-    color: #272757;
+    background: #2A2F3A;
+    border-color: var(--border);
+    color: var(--text-primary);
 }
 
 [data-testid="column"] > div {
@@ -1800,22 +1762,21 @@ label, .stSelectbox label, .stSlider label {
 }
 
 .controls-shell {
-    background: #ffffff;
+    background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 16px;
-    padding: var(--space-2);
-    margin-bottom: var(--space-1);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 24px;
 }
 
 .video-shell {
     border: 1px solid var(--border);
-    border-radius: 16px;
-    padding: var(--space-3);
+    border-radius: 12px;
+    padding: 16px;
     margin-top: var(--space-2);
-    margin-bottom: var(--space-3);
-    background: #ffffff;
-    box-shadow: 0 4px 12px rgba(15, 14, 71, 0.06);
-    border-top: 3px solid #0F0E47;
+    margin-bottom: 24px;
+    background: var(--surface);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .video-title {
@@ -1823,7 +1784,7 @@ label, .stSelectbox label, .stSlider label {
     font-weight: 700;
     font-size: 1.05rem;
     margin-bottom: var(--space-2);
-    color: #272757;
+    color: var(--text-primary);
 }
 
 .history-shell,
@@ -1842,7 +1803,7 @@ label, .stSelectbox label, .stSlider label {
     justify-content: space-between;
     gap: var(--space-1);
     padding: 8px 0;
-    border-bottom: 1px solid #ECEEF6;
+    border-bottom: 1px solid var(--border);
     color: var(--text-primary);
     font-size: 0.9rem;
 }
@@ -1857,7 +1818,7 @@ label, .stSelectbox label, .stSlider label {
 
 .footer-note {
     text-align: center;
-    color: #707090;
+    color: var(--text-muted);
     margin-top: 2rem;
     margin-bottom: 0.5rem;
     font-size: 0.95rem;
@@ -1867,13 +1828,13 @@ p,
 .stCaption,
 .stMarkdown small,
 label {
-    color: #4A4A4A;
-    font-size: 0.98rem;
+    color: var(--text-primary);
+    font-size: 0.96rem;
     line-height: 1.5;
 }
 
 section[data-testid="stSidebar"] {
-    background: #0F0E47;
+    background: #1C1F26;
     color: #FFFFFF;
 }
 
@@ -1887,14 +1848,14 @@ section[data-testid="stSidebar"] [data-testid="stTextInput"] input,
 section[data-testid="stSidebar"] [data-testid="stNumberInput"] input,
 section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
 section[data-testid="stSidebar"] .stButton > button {
-    background: #272757;
-    border-color: #272757;
+    background: #1C1F26;
+    border-color: var(--border);
     color: #FFFFFF;
 }
 
 section[data-testid="stSidebar"] .stButton > button:hover {
-    background: #8686AC;
-    border-color: #8686AC;
+    background: #2B2F3A;
+    border-color: var(--accent);
 }
 
 @media (max-width: 900px) {
